@@ -318,22 +318,42 @@ jobs:
               exit 1
             fi
 
-            echo "=== Lancement Django runserver ==="
-            cd /opt/backend
-            source /opt/backend/venv/bin/activate
-            nohup python manage.py runserver 0.0.0.0:8000 > /tmp/backend.log 2>&1 &
-            echo $! > /tmp/backend.pid
-            deactivate
-            echo "Backend PID $(cat /tmp/backend.pid)"
+            echo "=== Lancement Django via systemd ==="
+            sudo bash -c 'cat > /etc/systemd/system/medical-backend.service << SERVICE
+[Unit]
+Description=Medical Backend Django
+After=network.target mysql.service
+Wants=mysql.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/backend
+ExecStart=/opt/backend/venv/bin/python manage.py runserver 0.0.0.0:8000
+Restart=always
+RestartSec=5
+StandardOutput=append:/tmp/backend.log
+StandardError=append:/tmp/backend.log
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+SERVICE'
+            sudo systemctl daemon-reload
+            sudo systemctl enable medical-backend
+            sudo systemctl restart medical-backend
+            sleep 5
+            STATUS=$(sudo systemctl is-active medical-backend 2>/dev/null || echo "unknown")
+            echo "Backend service : $STATUS"
 
             echo "=== nginx ==="
             sudo systemctl is-active nginx || sudo systemctl start nginx
-            sleep 8
+            sleep 5
             echo "=== Endpoints ==="
             curl -s -o /dev/null -w "Frontend :80   HTTP %{http_code}\n" http://localhost/ || true
             curl -s -o /dev/null -w "Backend  :8000 HTTP %{http_code}\n" http://localhost:8000/api/ || true
             echo "=== Logs backend ==="
-            tail -5 /tmp/backend.log || true
+            tail -10 /tmp/backend.log || true
         run: printf '%s' "$REMOTE_SCRIPT" > /tmp/start_services.sh
 
       - name: Copier et executer le script de demarrage
