@@ -620,6 +620,83 @@ jobs:
           aws-session-token:     ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region:            ${{ env.AWS_REGION }}
 
+      # ── CORRECTION : detection automatique des dimensions reelles ──────────
+      # L'agent CloudWatch ajoute des dimensions supplementaires (ImageId,
+      # InstanceType, path, device, fstype, cpu, name) que le dashboard doit
+      # connaitre exactement pour trouver les metriques.
+      # Cette etape interroge CloudWatch et stocke les dimensions dans un fichier
+      # JSON avant de construire le dashboard.
+      - name: Detecter dimensions reelles des metriques CloudWatch
+        env:
+          INSTANCE_ID: ${{ needs.prepare.outputs.instance_id }}
+          REGION:      ${{ env.AWS_REGION }}
+        run: |
+          python3 << 'PYEOF'
+          import json, os, subprocess, sys
+
+          R  = os.environ["REGION"]
+          ID = os.environ["INSTANCE_ID"]
+
+          def list_metrics(namespace, metric_name):
+              """Recupere toutes les dimensions d'une metrique pour cette instance."""
+              r = subprocess.run(
+                  ["aws", "cloudwatch", "list-metrics",
+                   "--namespace", namespace,
+                   "--metric-name", metric_name,
+                   "--dimensions", f"Name=InstanceId,Value={ID}",
+                   "--region", R,
+                   "--output", "json"],
+                  capture_output=True, text=True
+              )
+              if r.returncode != 0:
+                  return []
+              data = json.loads(r.stdout)
+              return data.get("Metrics", [])
+
+          dims = {}
+
+          # mem_used_percent  -> InstanceId + ImageId + InstanceType
+          for m in list_metrics("MedicalApp/System", "mem_used_percent"):
+              dims["mem"] = {d["Name"]: d["Value"] for d in m["Dimensions"]}
+              break
+
+          # swap_used_percent -> memes dimensions que mem
+          for m in list_metrics("MedicalApp/System", "swap_used_percent"):
+              dims["swap"] = {d["Name"]: d["Value"] for d in m["Dimensions"]}
+              break
+
+          # disk_used_percent -> InstanceId + path + device + fstype
+          for m in list_metrics("MedicalApp/System", "disk_used_percent"):
+              dims["disk"] = {d["Name"]: d["Value"] for d in m["Dimensions"]}
+              break
+
+          # diskio_reads -> InstanceId + name (ex: xvda ou nvme0n1)
+          for m in list_metrics("MedicalApp/System", "diskio_reads"):
+              dims["diskio"] = {d["Name"]: d["Value"] for d in m["Dimensions"]}
+              break
+
+          # cpu_usage_user -> InstanceId + cpu (ex: cpu-total)
+          for m in list_metrics("MedicalApp/System", "cpu_usage_user"):
+              dims["cpu_detail"] = {d["Name"]: d["Value"] for d in m["Dimensions"]}
+              break
+
+          # Application metrics -> uniquement InstanceId (envoye par healthcheck.sh)
+          for m in list_metrics("MedicalApp/Application", "FrontendHealthy"):
+              dims["app"] = {d["Name"]: d["Value"] for d in m["Dimensions"]}
+              break
+
+          print("Dimensions detectees :")
+          for k, v in dims.items():
+              print(f"  {k}: {v}")
+
+          with open("/tmp/cw_dims.json", "w") as f:
+              json.dump(dims, f)
+
+          # Si aucune dimension detectee pour une metrique, on garde juste InstanceId
+          # (les donnees arriveront quand l'agent aura envoye ses premieres metriques)
+          print("Dimensions sauvegardees dans /tmp/cw_dims.json")
+          PYEOF
+
       - name: Creer dashboard CloudWatch
         env:
           INSTANCE_ID: ${{ needs.prepare.outputs.instance_id }}
@@ -632,6 +709,28 @@ jobs:
           R  = os.environ["REGION"]
           ID = os.environ["INSTANCE_ID"]
           AC = os.environ["ACCOUNT_ID"]
+
+          # Charger les dimensions detectees (ou utiliser fallback InstanceId seul)
+          try:
+              with open("/tmp/cw_dims.json") as f:
+                  dims = json.load(f)
+          except Exception:
+              dims = {}
+
+          def make_dims(key):
+              """Convertit un dict de dimensions en liste CloudWatch."""
+              d = dims.get(key, {"InstanceId": ID})
+              return [[k, v] for k, v in d.items()]
+
+          def metric_entry(namespace, metric_name, dim_key, extra=None):
+              """Construit une entree metrique avec les bonnes dimensions."""
+              d = dims.get(dim_key, {"InstanceId": ID})
+              entry = [namespace, metric_name]
+              for k, v in d.items():
+                  entry += [k, v]
+              if extra:
+                  entry.append(extra)
+              return entry
 
           def alarm_arn(name):
               return f"arn:aws:cloudwatch:{R}:{AC}:alarm:{name}"
@@ -671,7 +770,7 @@ jobs:
                   }
               },
 
-              # Ligne 1 : CPU / Memoire / Disque
+              # Ligne 1 : CPU (AWS/EC2 natif) / Memoire / Disque
               metric_w(
                   "CPU (%)",
                   [["AWS/EC2", "CPUUtilization", "InstanceId", ID,
@@ -680,18 +779,18 @@ jobs:
               ),
               metric_w(
                   "Memoire utilisee (%)",
-                  [["MedicalApp/System", "mem_used_percent", "InstanceId", ID,
-                    {"color": "#E91E63"}]],
+                  [metric_entry("MedicalApp/System", "mem_used_percent", "mem",
+                                {"color": "#E91E63", "label": "mem_used_percent"})],
                   8, 1, ymax=100, threshold=85
               ),
               metric_w(
                   "Disque / utilise (%)",
-                  [["MedicalApp/System", "disk_used_percent", "InstanceId", ID,
-                    {"color": "#9C27B0"}]],
+                  [metric_entry("MedicalApp/System", "disk_used_percent", "disk",
+                                {"color": "#9C27B0", "label": "disk_used_percent"})],
                   16, 1, ymax=100, threshold=85
               ),
 
-              # Ligne 2 : Reseau / Disk I/O
+              # Ligne 2 : Reseau (AWS/EC2 natif) / Disk I/O
               {
                   "type": "metric", "x": 0, "y": 7, "width": 12, "height": 6,
                   "properties": {
@@ -710,10 +809,10 @@ jobs:
                   "properties": {
                       "title": "I/O Disque (ops/min)",
                       "metrics": [
-                          ["MedicalApp/System", "diskio_reads", "InstanceId", ID,
-                           {"label": "Lectures", "stat": "Sum"}],
-                          ["MedicalApp/System", "diskio_writes", "InstanceId", ID,
-                           {"label": "Ecritures", "stat": "Sum", "color": "#FF5722"}]
+                          metric_entry("MedicalApp/System", "diskio_reads",  "diskio",
+                                       {"label": "Lectures",  "stat": "Sum"}),
+                          metric_entry("MedicalApp/System", "diskio_writes", "diskio",
+                                       {"label": "Ecritures", "stat": "Sum", "color": "#FF5722"})
                       ],
                       "period": 60, "view": "timeSeries", "region": R
                   }
@@ -725,17 +824,18 @@ jobs:
                   "properties": {
                       "title": "CPU Detail (user / system / iowait)",
                       "metrics": [
-                          ["MedicalApp/System", "cpu_usage_user",   "InstanceId", ID, {"label": "User"}],
-                          ["MedicalApp/System", "cpu_usage_system", "InstanceId", ID, {"label": "System"}],
-                          ["MedicalApp/System", "cpu_usage_iowait", "InstanceId", ID,
-                           {"label": "IO Wait", "color": "#FF5722"}]
+                          metric_entry("MedicalApp/System", "cpu_usage_user",   "cpu_detail", {"label": "User"}),
+                          metric_entry("MedicalApp/System", "cpu_usage_system", "cpu_detail", {"label": "System"}),
+                          metric_entry("MedicalApp/System", "cpu_usage_iowait", "cpu_detail",
+                                       {"label": "IO Wait", "color": "#FF5722"})
                       ],
                       "period": 60, "stat": "Average", "view": "timeSeries", "region": R
                   }
               },
               metric_w(
                   "Swap utilise (%)",
-                  [["MedicalApp/System", "swap_used_percent", "InstanceId", ID]],
+                  [metric_entry("MedicalApp/System", "swap_used_percent", "swap",
+                                {"label": "swap_used_percent"})],
                   8, 13, ymax=100
               ),
               {
@@ -743,12 +843,12 @@ jobs:
                   "properties": {
                       "title": "Disponibilite Application (1=OK / 0=DOWN)",
                       "metrics": [
-                          ["MedicalApp/Application", "FrontendHealthy", "InstanceId", ID,
-                           {"label": "Frontend :80",  "color": "#4CAF50"}],
-                          ["MedicalApp/Application", "ApiHealthy",      "InstanceId", ID,
-                           {"label": "API :8000",     "color": "#2196F3"}],
-                          ["MedicalApp/Application", "MysqlHealthy",    "InstanceId", ID,
-                           {"label": "MySQL",         "color": "#FF9800"}]
+                          metric_entry("MedicalApp/Application", "FrontendHealthy", "app",
+                                       {"label": "Frontend :80",  "color": "#4CAF50"}),
+                          metric_entry("MedicalApp/Application", "ApiHealthy",      "app",
+                                       {"label": "API :8000",     "color": "#2196F3"}),
+                          metric_entry("MedicalApp/Application", "MysqlHealthy",    "app",
+                                       {"label": "MySQL",         "color": "#FF9800"})
                       ],
                       "period": 300, "stat": "Minimum",
                       "view": "timeSeries", "region": R,
