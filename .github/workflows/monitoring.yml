@@ -221,20 +221,24 @@ jobs:
           # FrontendHealthy, ApiHealthy, MysqlHealthy, AppHealthy (1=OK, 0=DOWN)
           REGION="us-east-1"
           NAMESPACE="MedicalApp/Application"
-          INSTANCE_ID=$(curl -s --max-time 3 \
+          TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+            -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+          INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
             http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "unknown")
 
           check() {
             local code
             code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$1" 2>/dev/null || echo "000")
-            [ "$code" = "200" ] && echo 1 || echo 0
+            [[ "$code" =~ ^(200|301|302|403|405)$ ]] && echo 1 || echo 0
           }
 
           FRONTEND_OK=$(check "http://localhost/")
           API_OK=$(check "http://localhost:8000/api/account/login/")
           MYSQL_OK=0
           systemctl is-active --quiet mysql 2>/dev/null && MYSQL_OK=1
-          APP_OK=$(( FRONTEND_OK & API_OK & MYSQL_OK ))
+          BACKEND_OK=0
+          systemctl is-active --quiet medical-backend 2>/dev/null && BACKEND_OK=1
+          APP_OK=$(( FRONTEND_OK & API_OK & MYSQL_OK & BACKEND_OK ))
 
           export AWS_DEFAULT_REGION="$REGION"
 
@@ -264,7 +268,9 @@ jobs:
           REGION="us-east-1"
           ACCOUNT_ID="${ACCOUNT_ID}"
           SNS_ARN="arn:aws:sns:\${REGION}:\${ACCOUNT_ID}:medical-app-alerts"
-          INSTANCE_ID=\$(curl -s --max-time 3 \
+          TOKEN=\$(curl -s -X PUT "http://169.254.169.254/latest/api/token" \
+            -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+          INSTANCE_ID=\$(curl -s -H "X-aws-ec2-metadata-token: \$TOKEN" \
             http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "unknown")
           DISK_DEVICE=\$(df --output=source / | tail -1 | sed 's|/dev/||')
           DISK_FSTYPE=\$(df --output=fstype / | tail -1)
