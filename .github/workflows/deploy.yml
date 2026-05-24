@@ -319,26 +319,7 @@ jobs:
             fi
 
             echo "=== Lancement Django via systemd ==="
-            sudo bash -c 'cat > /etc/systemd/system/medical-backend.service << SERVICE
-[Unit]
-Description=Medical Backend Django
-After=network.target mysql.service
-Wants=mysql.service
-
-[Service]
-Type=simple
-User=ubuntu
-WorkingDirectory=/opt/backend
-ExecStart=/opt/backend/venv/bin/python manage.py runserver 0.0.0.0:8000
-Restart=always
-RestartSec=5
-StandardOutput=append:/tmp/backend.log
-StandardError=append:/tmp/backend.log
-Environment=PYTHONUNBUFFERED=1
-
-[Install]
-WantedBy=multi-user.target
-SERVICE'
+            printf '[Unit]\nDescription=Medical Backend Django\nAfter=network.target mysql.service\nWants=mysql.service\n\n[Service]\nType=simple\nUser=ubuntu\nWorkingDirectory=/opt/backend\nExecStart=/opt/backend/venv/bin/python manage.py runserver 0.0.0.0:8000\nRestart=always\nRestartSec=5\nStandardOutput=append:/tmp/backend.log\nStandardError=append:/tmp/backend.log\nEnvironment=PYTHONUNBUFFERED=1\n\n[Install]\nWantedBy=multi-user.target\n' | sudo tee /etc/systemd/system/medical-backend.service > /dev/null
             sudo systemctl daemon-reload
             sudo systemctl enable medical-backend
             sudo systemctl restart medical-backend
