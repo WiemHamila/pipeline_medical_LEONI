@@ -315,7 +315,7 @@ jobs:
           if ! command -v amazon-cloudwatch-agent-ctl &>/dev/null; then
             cd /tmp
             wget -q https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb
-            sudo dpkg -i -q amazon-cloudwatch-agent.deb
+            sudo dpkg -i amazon-cloudwatch-agent.deb 2>&1 | grep -v "^(Selecting\|Preparing\|Unpacking\|Setting\|Processing)" || true
             rm -f amazon-cloudwatch-agent.deb
             echo "  Agent installe"
           else
@@ -357,7 +357,7 @@ jobs:
             curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" \
               -o /tmp/awscliv2.zip
             unzip -q /tmp/awscliv2.zip -d /tmp/
-            sudo /tmp/aws/install --update -q
+            sudo /tmp/aws/install --update
             rm -rf /tmp/awscliv2.zip /tmp/aws/
             echo "  AWS CLI installe : $(aws --version 2>&1)"
           else
