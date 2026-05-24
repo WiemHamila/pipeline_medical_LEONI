@@ -241,8 +241,15 @@ jobs:
           ELASTIC_IP: ${{ steps.get_ip.outputs.server_ip }}
           DB_APP_PASSWORD: ${{ secrets.DB_APP_PASSWORD }}
           MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
+        timeout-minutes: 20
         run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem ubuntu@"$SERVER_IP" "chmod +x /tmp/setup.sh && sudo VM_EXISTS='$VM_EXISTS' ELASTIC_IP='$ELASTIC_IP' DB_APP_PASSWORD='$DB_APP_PASSWORD' MYSQL_ROOT_PASSWORD='$MYSQL_ROOT_PASSWORD' bash /tmp/setup.sh"
+          ssh -o StrictHostKeyChecking=no \
+              -o ServerAliveInterval=30 \
+              -o ServerAliveCountMax=20 \
+              -o ConnectTimeout=30 \
+              -i ~/.ssh/labsuser.pem \
+              ubuntu@"$SERVER_IP" \
+              "chmod +x /tmp/setup.sh && sudo VM_EXISTS='$VM_EXISTS' ELASTIC_IP='$ELASTIC_IP' DB_APP_PASSWORD='$DB_APP_PASSWORD' MYSQL_ROOT_PASSWORD='$MYSQL_ROOT_PASSWORD' bash /tmp/setup.sh"
 
   # ── Job 4 : demarrer les services ───────────────────────────────────────
   run:
@@ -332,9 +339,17 @@ jobs:
       - name: Copier et executer le script de demarrage
         env:
           SERVER_IP: ${{ steps.get_ip.outputs.server_ip }}
+        timeout-minutes: 10
         run: |
-          scp -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem /tmp/start_services.sh ubuntu@"$SERVER_IP":/tmp/start_services.sh
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem ubuntu@"$SERVER_IP" "chmod +x /tmp/start_services.sh && sudo bash /tmp/start_services.sh"
+          scp -o StrictHostKeyChecking=no \
+              -o ServerAliveInterval=30 \
+              -o ServerAliveCountMax=10 \
+              -i ~/.ssh/labsuser.pem /tmp/start_services.sh ubuntu@"$SERVER_IP":/tmp/start_services.sh
+          ssh -o StrictHostKeyChecking=no \
+              -o ServerAliveInterval=30 \
+              -o ServerAliveCountMax=10 \
+              -i ~/.ssh/labsuser.pem ubuntu@"$SERVER_IP" \
+              "chmod +x /tmp/start_services.sh && sudo bash /tmp/start_services.sh"
 
       - name: Afficher les URLs
         env:

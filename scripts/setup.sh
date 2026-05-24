@@ -169,10 +169,10 @@ cd "$FRONTEND_DIR"
 rm -rf node_modules
 
 echo "  npm install..."
-npm install --legacy-peer-deps 2>&1 | tail -3
+npm install --legacy-peer-deps --no-progress --no-audit --no-fund 2>&1 | tail -5
 
 # react-is : dependance implicite de recharts, requise par Vite 8/Rolldown
-npm install react-is --legacy-peer-deps --silent
+npm install react-is --legacy-peer-deps --silent --no-progress
 
 echo "  npm run build..."
 npm run build 2>&1 | tail -10
