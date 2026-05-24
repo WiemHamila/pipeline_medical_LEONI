@@ -364,10 +364,17 @@ jobs:
             echo "  AWS CLI deja present : $(aws --version 2>&1)"
           fi
 
-          # Copier les credentials aussi pour l'utilisateur ubuntu
+          # Copier les credentials pour ubuntu ET cwagent
           mkdir -p /home/ubuntu/.aws
           cp /tmp/cw_credentials /home/ubuntu/.aws/credentials
           chmod 600 /home/ubuntu/.aws/credentials
+
+          # Credentials pour cwagent (utilisateur qui execute l'agent CloudWatch)
+          sudo mkdir -p /home/cwagent/.aws
+          sudo cp /tmp/cw_credentials /home/cwagent/.aws/credentials
+          sudo chmod 600 /home/cwagent/.aws/credentials
+          sudo chown -R cwagent:cwagent /home/cwagent/.aws 2>/dev/null || true
+          echo "  Credentials copies pour cwagent"
 
           echo "=== Alarme disque (dimensions detectees localement) ==="
           chmod +x /tmp/disk_alarm.sh
