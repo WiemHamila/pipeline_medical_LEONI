@@ -3,8 +3,6 @@ name: "DevSecOps - Alertes Telegram"
 # Déclenché après le DAST ou manuellement.
 # Exécute SAST (Bandit + pip-audit), analyse via Mistral, notifie sur Telegram.
 on:
-  push:
-    branches: [master, main]
   workflow_run:
     workflows: ["DAST - Tests Dynamiques de Securite"]
     types: [completed]
@@ -13,7 +11,7 @@ on:
       force_alert:
         description: "Forcer l'envoi d'une alerte même sans CVE"
         type: boolean
-        default: false
+        default: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
