@@ -11,7 +11,7 @@ on:
   workflow_run:
     workflows: ["Deploy Medical Project"]
     types: [completed]
-    branches: [main]
+    branches: [main, master]
 
 # Permissions pour ecrire les artefacts
 permissions:
