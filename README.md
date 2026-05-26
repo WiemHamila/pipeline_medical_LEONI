@@ -717,3 +717,4 @@ ssh-keygen -f ~/.ssh/known_hosts -R '<ANCIENNE_IP>'
 - **nginx** : proxy `/api/` et `/media/` → Gunicorn, sert `dist/` pour React
 - **Node.js** : 20 LTS (via NodeSource)
 - **MySQL** : 8.0 (Ubuntu apt), bases `medical_db` + `im_db`
+"test" 
