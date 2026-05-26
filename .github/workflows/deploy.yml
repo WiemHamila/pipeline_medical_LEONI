@@ -303,3 +303,15 @@ jobs:
           echo "  Admin       : http://$SERVER_IP/api/admin/"
           echo "  SSH         : ssh -i labsuser.pem ubuntu@$SERVER_IP"
           echo "=========================================="
+
+      - name: Notification Telegram - Déploiement réussi
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          SERVER_IP:          ${{ steps.get_ip.outputs.server_ip }}
+          DEPLOY_MODE:        "true"
+          GITHUB_REPOSITORY:  ${{ github.repository }}
+          GITHUB_RUN_ID:      ${{ github.run_id }}
+        run: |
+          pip install --quiet requests
+          python3 scripts/telegram_alert.py

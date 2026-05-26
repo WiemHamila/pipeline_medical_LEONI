@@ -222,8 +222,12 @@ jobs:
           GITHUB_REPOSITORY:  ${{ github.repository }}
           GITHUB_RUN_ID:      ${{ github.run_id }}
         run: |
+          # Lire l'IP depuis le tfstate (mis à jour par Terraform à chaque deploy)
+          SERVER_IP=$(jq -r '[.resources[] | select(.type=="aws_eip") | .instances[0].attributes.public_ip // ""] | first // ""' terraform/terraform.tfstate 2>/dev/null || echo "")
+          export SERVER_IP
           echo "=== Lancement telegram_alert.py ==="
           echo "  DAST result   : $DAST_RESULT"
+          echo "  Instance IP   : $SERVER_IP"
           echo "  Total CVEs    : ${{ needs.sast-scan.outputs.total_cves }}"
           echo "  Bandit HIGH   : ${{ needs.sast-scan.outputs.bandit_high }}"
           python3 scripts/telegram_alert.py

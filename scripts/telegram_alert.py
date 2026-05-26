@@ -19,6 +19,8 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT  = os.environ.get("TELEGRAM_CHAT_ID", "")
 MISTRAL_KEY    = os.environ.get("MISTRAL_API_KEY", "")
 DAST_RESULT    = os.environ.get("DAST_RESULT", "unknown")
+SERVER_IP      = os.environ.get("SERVER_IP", "")
+DEPLOY_MODE    = os.environ.get("DEPLOY_MODE", "false").lower() == "true"
 GITHUB_RUN_URL = (
     f"https://github.com/{os.environ.get('GITHUB_REPOSITORY','')}"
     f"/actions/runs/{os.environ.get('GITHUB_RUN_ID','')}"
@@ -282,6 +284,21 @@ def parse_bandit(data) -> tuple[int, int, list]:
     return len(high), len(medium), top
 
 
+# ── Notification déploiement ─────────────────────────────────────────────────
+
+def format_deploy_notification(ip: str, run_url: str, date_fr: str) -> str:
+    return (
+        f"[{date_fr}] alert_medical: ✅ Déploiement Réussi — Plateforme Médicale LEONI\n\n"
+        f"🖥️  Instance EC2 déployée et opérationnelle\n\n"
+        f"• Adresse IP   : {ip}\n"
+        f"• Application  : http://{ip}/\n"
+        f"• Admin Django : http://{ip}/api/admin/\n"
+        f"• SSH          : ssh -i labsuser.pem ubuntu@{ip}\n\n"
+        f"🔄 Lancement du DAST (OWASP ZAP) en cours...\n\n"
+        f"• CI/CD : {run_url}"
+    )
+
+
 # ── Formatage des messages Telegram ──────────────────────────────────────────
 
 def format_cve_alert(
@@ -339,7 +356,8 @@ def format_audit_report(
         f"• Packages scannés : {stats['total']} | CRITICAL CVEs : {stats['critical']} "
         f"| Bandit HIGH : {stats['bandit_high']}\n"
         f"• DAST (ZAP) : {stats['dast']}\n"
-        f"• Rapport CI : {GITHUB_RUN_URL}\n"
+        + (f"• Instance EC2 : http://{stats['server_ip']}/\n" if stats.get('server_ip') else "")
+        + f"• Rapport CI : {GITHUB_RUN_URL}\n"
         f"{iso_ts}"
     )
 
@@ -356,6 +374,16 @@ def main() -> int:
 
     # ── Collecter tous les abonnés (admin + utilisateurs /start) ─────────
     subscribers = get_all_subscribers()
+
+    # ── Mode déploiement : notification IP uniquement ─────────────────────
+    if DEPLOY_MODE:
+        if not SERVER_IP:
+            print("[ERROR] SERVER_IP vide — impossible d'envoyer la notification de déploiement")
+            return 1
+        msg = format_deploy_notification(SERVER_IP, GITHUB_RUN_URL, date_fr)
+        send_telegram(msg, subscribers)
+        print(f"[INFO] Notification déploiement envoyée pour IP {SERVER_IP}")
+        return 0
 
     # ── Charger résultats ─────────────────────────────────────────────────
     pipaudit_data = load_json("pipaudit_results.json")
@@ -461,6 +489,7 @@ def main() -> int:
         "critical":    total_cves,
         "bandit_high": bandit_high,
         "dast":        DAST_RESULT,
+        "server_ip":   SERVER_IP,
     }
 
     report = format_audit_report(
