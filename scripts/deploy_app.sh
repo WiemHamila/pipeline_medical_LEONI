@@ -65,8 +65,18 @@ fi
 # ── [3/8] Dépendances système ──────────────────────────────────────────────
 echo ""
 echo "=== [3/8] Dépendances système ==="
+apt-get update -qq
 apt-get install -y python3-venv python3-dev libmysqlclient-dev \
-  pkg-config build-essential nodejs npm 2>&1 | tail -3
+  pkg-config build-essential 2>&1 | tail -3
+
+# Node.js via NodeSource (évite les conflits apt)
+if ! command -v node &>/dev/null || [ "$(node --version 2>/dev/null | cut -d. -f1 | tr -d v)" -lt 18 ]; then
+  echo "  Installation Node.js 20.x via NodeSource..."
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash - 2>&1 | tail -3
+  apt-get install -y nodejs 2>&1 | tail -3
+else
+  echo "  Node.js $(node --version) déjà installé."
+fi
 
 # ── [4/8] Backend Django — venv + requirements ────────────────────────────
 echo ""
