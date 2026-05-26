@@ -3,11 +3,14 @@
 DevSecOps Telegram Alert — Medical LEONI Pipeline
 Lit les résultats SAST (Bandit, pip-audit) et les résultats DAST,
 appelle Mistral AI pour la remédiation, envoie des alertes Telegram formatées.
+Supporte plusieurs abonnés : tout utilisateur ayant envoyé /start au bot
+est automatiquement inclus dans la diffusion.
 """
 
 import json
 import os
 import sys
+import time
 import requests
 from datetime import datetime, timezone
 
@@ -21,6 +24,9 @@ GITHUB_RUN_URL = (
     f"/actions/runs/{os.environ.get('GITHUB_RUN_ID','')}"
 )
 
+# Fenêtre de bienvenue : répondre au /start uniquement s'il date de moins de 24h
+_WELCOME_WINDOW_SECONDS = 86400
+
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -32,25 +38,108 @@ def load_json(path: str):
         return None
 
 
-def send_telegram(text: str) -> bool:
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
-        print("[DRY-RUN] Telegram non configuré — message:\n" + text[:300])
-        return True
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+def get_all_subscribers() -> list[str]:
+    """
+    Retourne la liste de tous les chat IDs abonnés au bot.
+    Collecte les IDs depuis getUpdates (100 derniers messages) sans avancer
+    l'offset, afin de conserver l'historique des abonnés entre les runs CI.
+    Répond automatiquement aux commandes /start récentes (< 24h).
+    """
+    chat_ids: set[str] = set()
+    if TELEGRAM_CHAT:
+        chat_ids.add(TELEGRAM_CHAT)
+
+    if not TELEGRAM_TOKEN:
+        return list(chat_ids)
+
     try:
-        r = requests.post(
-            url,
-            json={"chat_id": TELEGRAM_CHAT, "text": text},
+        r = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+            params={"limit": 100, "timeout": 0},
             timeout=15,
         )
         if r.status_code != 200:
-            print(f"[TELEGRAM ERROR] {r.status_code}: {r.text}", file=sys.stderr)
-            return False
-        print(f"[TELEGRAM] Message envoyé (ok={r.json().get('ok')})")
-        return True
+            print(f"[TELEGRAM] getUpdates error {r.status_code}", file=sys.stderr)
+            return list(chat_ids)
+
+        now_ts = time.time()
+        updates = r.json().get("result", [])
+
+        for update in updates:
+            for key in ("message", "edited_message", "channel_post"):
+                msg = update.get(key)
+                if not msg or "chat" not in msg:
+                    continue
+                chat_id = str(msg["chat"]["id"])
+                chat_ids.add(chat_id)
+
+                # Répondre au /start s'il est récent (< 24h)
+                text = msg.get("text", "")
+                msg_date = msg.get("date", 0)
+                if text == "/start" and (now_ts - msg_date) < _WELCOME_WINDOW_SECONDS:
+                    first_name = msg["chat"].get("first_name", "")
+                    _send_welcome(chat_id, first_name)
+
+        print(f"[TELEGRAM] {len(chat_ids)} abonné(s) : {', '.join(sorted(chat_ids))}")
     except Exception as e:
-        print(f"[TELEGRAM EXCEPTION] {e}", file=sys.stderr)
-        return False
+        print(f"[TELEGRAM] getUpdates exception: {e}", file=sys.stderr)
+
+    return list(chat_ids)
+
+
+def _send_welcome(chat_id: str, first_name: str) -> None:
+    """Envoie un message de bienvenue à un nouvel abonné."""
+    welcome = (
+        f"Bonjour {first_name} ! 👋\n\n"
+        f"✅ Vous êtes maintenant abonné aux alertes DevSecOps "
+        f"de la plateforme médicale LEONI.\n\n"
+        f"Vous recevrez automatiquement :\n"
+        f"• 🔴 Alertes CVEs (pip-audit)\n"
+        f"• 🟠 Alertes SAST (Bandit)\n"
+        f"• 🔍 Rapport d'audit complet\n\n"
+        f"Le prochain rapport sera envoyé lors du prochain déploiement CI/CD."
+    )
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": welcome},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            print(f"[TELEGRAM] Bienvenue envoyé à {chat_id} ({first_name})")
+    except Exception as e:
+        print(f"[TELEGRAM] Welcome error: {e}", file=sys.stderr)
+
+
+def send_telegram(text: str, subscribers: list[str] | None = None) -> bool:
+    """Envoie un message à tous les abonnés (ou à TELEGRAM_CHAT si liste vide)."""
+    if not TELEGRAM_TOKEN:
+        print("[DRY-RUN] Telegram non configuré — message:\n" + text[:300])
+        return True
+
+    targets = subscribers if subscribers else ([TELEGRAM_CHAT] if TELEGRAM_CHAT else [])
+    if not targets:
+        print("[DRY-RUN] Aucun destinataire configuré — message:\n" + text[:300])
+        return True
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    success = True
+    for chat_id in targets:
+        try:
+            r = requests.post(
+                url,
+                json={"chat_id": chat_id, "text": text},
+                timeout=15,
+            )
+            if r.status_code != 200:
+                print(f"[TELEGRAM ERROR] chat={chat_id} {r.status_code}: {r.text}", file=sys.stderr)
+                success = False
+            else:
+                print(f"[TELEGRAM] Message envoyé à {chat_id} (ok={r.json().get('ok')})")
+        except Exception as e:
+            print(f"[TELEGRAM EXCEPTION] chat={chat_id}: {e}", file=sys.stderr)
+            success = False
+    return success
 
 
 def mistral_remediation(pkg_name: str, version: str, cve_ids: list[str]) -> str:
@@ -265,6 +354,9 @@ def main() -> int:
     print(f"[INFO] Début analyse DevSecOps — {iso_ts}")
     print(f"[INFO] DAST status : {DAST_RESULT}")
 
+    # ── Collecter tous les abonnés (admin + utilisateurs /start) ─────────
+    subscribers = get_all_subscribers()
+
     # ── Charger résultats ─────────────────────────────────────────────────
     pipaudit_data = load_json("pipaudit_results.json")
     bandit_data   = load_json("bandit_results.json")
@@ -303,7 +395,7 @@ def main() -> int:
             date_fr=date_fr,
             iso_ts=iso_ts,
         )
-        send_telegram(alert)
+        send_telegram(alert, subscribers)
 
     # ── Alerte Bandit si findings HIGH ───────────────────────────────────
     if bandit_top:
@@ -324,7 +416,7 @@ def main() -> int:
             f"Remédiation :\n{bandit_remediation}\n\n"
             f"{iso_ts}"
         )
-        send_telegram(bandit_alert)
+        send_telegram(bandit_alert, subscribers)
 
     # ── Rapport d'audit global ────────────────────────────────────────────
     score = max(10, 100 - total_cves * 6 - bandit_high * 3 - bandit_med)
@@ -380,7 +472,7 @@ def main() -> int:
         date_fr=date_fr,
         iso_ts=iso_ts,
     )
-    send_telegram(report)
+    send_telegram(report, subscribers)
 
     print(f"[INFO] Score de sécurité : {score}/100")
     print("[INFO] Notifications Telegram envoyées avec succès")
