@@ -34,6 +34,12 @@ jobs:
   sast-scan:
     name: "SAST - Bandit + pip-audit (CVEs Python)"
     runs-on: ubuntu-latest
+    # Lancer le SAST+Telegram seulement si le DAST a réussi (ou si déclenché
+    # manuellement). Sans ça, le rapport partirait même après un DAST en échec
+    # (DAST lancé sur une VM pas encore prête).
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     outputs:
       has_findings: ${{ steps.summary.outputs.has_findings }}
       total_cves:   ${{ steps.summary.outputs.total_cves }}

@@ -41,6 +41,12 @@ jobs:
   prepare:
     name: "Phase 0 - Preparation cible DAST"
     runs-on: ubuntu-latest
+    # Ne lancer le DAST que si le deploy a réussi (ou si déclenché manuellement).
+    # Sans cette condition, types: [completed] déclenche le DAST même après un
+    # deploy en échec — ce qui n'a aucun sens puisque l'appli ne tourne pas.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     outputs:
       target_ip: ${{ steps.get_ip.outputs.target_ip }}
     steps:
