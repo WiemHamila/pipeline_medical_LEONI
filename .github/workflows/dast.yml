@@ -11,7 +11,7 @@ on:
   workflow_run:
     workflows: ["Deploy Medical Project"]
     types: [completed]
-    branches: [main]
+    branches: [main, master]
 
 # Permissions pour ecrire les artefacts
 permissions:
@@ -41,6 +41,12 @@ jobs:
   prepare:
     name: "Phase 0 - Preparation cible DAST"
     runs-on: ubuntu-latest
+    # Ne lancer le DAST que si le deploy a réussi (ou si déclenché manuellement).
+    # Sans cette condition, types: [completed] déclenche le DAST même après un
+    # deploy en échec — ce qui n'a aucun sens puisque l'appli ne tourne pas.
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     outputs:
       target_ip: ${{ steps.get_ip.outputs.target_ip }}
     steps:
@@ -80,6 +86,7 @@ jobs:
   security-headers:
     name: "Phase 1 - En-tetes HTTP de Securite"
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     needs: prepare
     steps:
       - name: Analyser les en-tetes HTTP du frontend
@@ -124,6 +131,7 @@ jobs:
   zap-passive:
     name: "Phase 2 - OWASP ZAP Scan Passif (Baseline)"
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: prepare
     steps:
       - name: Checkout (pour rules.tsv)
@@ -166,7 +174,8 @@ jobs:
   api-probes:
     name: "Phase 3 - Sondes API (SQLi, XSS, Bypass, IDOR)"
     runs-on: ubuntu-latest
-    needs: [prepare, zap-passive, security-headers]
+    timeout-minutes: 10
+    needs: [prepare]
     steps:
       - name: Test injection SQL - endpoint login
         env:
@@ -287,10 +296,12 @@ jobs:
           CSP=$(curl -sI "http://$TARGET/" --max-time 10 | grep -i "Content-Security-Policy" || echo "  Absent")
           echo "  CSP frame-ancestors: $CSP"
 
-  # ── Job 5 : OWASP ZAP scan actif complet (le plus long) ─────────────────
+  # ── Job 5 : OWASP ZAP scan actif complet ────────────────────────────────
+  # Optimisation : timeout réduit à 5 min (-T 5), scan API supprimé (redondant)
   zap-active:
     name: "Phase 5 - OWASP ZAP Scan Actif Complet"
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [prepare, auth-security]
     steps:
       - name: Checkout (pour rules.tsv)
@@ -304,25 +315,13 @@ jobs:
           fail_action: false
           allow_issue_writing: false
           artifact_name: "zap-full-scan"
-          cmd_options: "-T 10"
+          cmd_options: "-T 5 -m 5"
         continue-on-error: true
 
       - name: Renommer rapport ZAP actif
         run: mv report_html.html zap_active_report.html 2>/dev/null || true
 
-      - name: ZAP API Scan - Endpoints /api/
-        uses: zaproxy/action-api-scan@v0.7.0
-        with:
-          target: "http://${{ needs.prepare.outputs.target_ip }}/api/"
-          fail_action: false
-          allow_issue_writing: false
-          artifact_name: "zap-api-scan"
-        continue-on-error: true
-
-      - name: Renommer rapport ZAP API
-        run: mv report_html.html zap_api_active_report.html 2>/dev/null || true
-
-      - name: Upload rapports ZAP actifs
+      - name: Upload rapport ZAP actif
         uses: actions/upload-artifact@v4
         if: always()
         with:

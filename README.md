@@ -1,5 +1,39 @@
 # Pipeline CI/CD — Plateforme Médicale LEONI
 
+---
+
+### Statut des pipelines
+
+[![Deploy Medical Project](https://github.com/ngrassa/pipeline_medical_LEONI/actions/workflows/deploy.yml/badge.svg)](https://github.com/ngrassa/pipeline_medical_LEONI/actions/workflows/deploy.yml)
+[![DAST - Tests Dynamiques](https://github.com/ngrassa/pipeline_medical_LEONI/actions/workflows/dast.yml/badge.svg)](https://github.com/ngrassa/pipeline_medical_LEONI/actions/workflows/dast.yml)
+[![DevSecOps - Alertes Telegram](https://github.com/ngrassa/pipeline_medical_LEONI/actions/workflows/telegram-notify.yml/badge.svg)](https://github.com/ngrassa/pipeline_medical_LEONI/actions/workflows/telegram-notify.yml)
+[![Monitoring CloudWatch](https://github.com/ngrassa/pipeline_medical_LEONI/actions/workflows/monitoring.yml/badge.svg)](https://github.com/ngrassa/pipeline_medical_LEONI/actions/workflows/monitoring.yml)
+
+---
+
+### Stack technique
+
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![Django](https://img.shields.io/badge/Django-5.x-092E20?logo=django&logoColor=white)
+![React](https://img.shields.io/badge/React-Vite-61DAFB?logo=react&logoColor=black)
+![MySQL](https://img.shields.io/badge/MySQL-8.0-4479A1?logo=mysql&logoColor=white)
+![nginx](https://img.shields.io/badge/nginx-Reverse_Proxy-009639?logo=nginx&logoColor=white)
+![AWS EC2](https://img.shields.io/badge/AWS-EC2_t2.large-FF9900?logo=amazonaws&logoColor=white)
+![Terraform](https://img.shields.io/badge/Terraform-1.7.5-7B42BC?logo=terraform&logoColor=white)
+![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub_Actions-2088FF?logo=githubactions&logoColor=white)
+
+---
+
+### Sécurité DevSecOps
+
+![Bandit](https://img.shields.io/badge/SAST-Bandit-FFD43B?logo=python&logoColor=black)
+![pip-audit](https://img.shields.io/badge/CVE-pip--audit-3776AB?logo=pypi&logoColor=white)
+![OWASP ZAP](https://img.shields.io/badge/DAST-OWASP_ZAP-000000?logo=owasp&logoColor=white)
+![Mistral AI](https://img.shields.io/badge/AI-Mistral_Remédiation-FF7000?logo=mistral&logoColor=white)
+![Telegram](https://img.shields.io/badge/Alertes-Telegram-26A5E4?logo=telegram&logoColor=white)
+
+---
+
 Déploiement automatisé et tests de sécurité dynamiques (DAST) d'une application médicale full-stack Django + React sur AWS EC2, orchestrés via GitHub Actions et Terraform.
 
 ---
