@@ -188,7 +188,7 @@ jobs:
           git diff --cached --quiet || git commit -m "chore: update terraform state [skip ci]"
           git push || echo "Push state echoue"
 
-  # ── Job 3 : deployer l'application ──────────────────────────────────────
+  # ── Job 3 : deployer l'application complète ─────────────────────────────
   setup:
     name: "Job 3 - Deploy Application"
     runs-on: ubuntu-latest
@@ -216,7 +216,7 @@ jobs:
           echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/labsuser.pem
           chmod 600 ~/.ssh/labsuser.pem
 
-      - name: Attendre SSH
+      - name: Attendre SSH disponible
         env:
           SERVER_IP: ${{ steps.get_ip.outputs.server_ip }}
         run: |
@@ -230,129 +230,60 @@ jobs:
             sleep 10
           done
 
-      - name: Copier le script setup
+      - name: Preparer repertoires sur le serveur
         env:
           SERVER_IP: ${{ steps.get_ip.outputs.server_ip }}
         run: |
-          scp -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem scripts/setup.sh ubuntu@"$SERVER_IP":/tmp/setup.sh
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem ubuntu@"$SERVER_IP" \
+            "sudo mkdir -p /opt/backend /opt/frontend /tmp/sql_dumps && \
+             sudo chown -R ubuntu:ubuntu /opt/backend /opt/frontend /tmp/sql_dumps"
 
-      - name: Executer le setup
+      - name: Synchroniser backend
         env:
           SERVER_IP: ${{ steps.get_ip.outputs.server_ip }}
-          VM_EXISTS: ${{ needs.check.outputs.vm_exists }}
-          ELASTIC_IP: ${{ steps.get_ip.outputs.server_ip }}
-          DB_APP_PASSWORD: ${{ secrets.DB_APP_PASSWORD }}
+        run: |
+          rsync -az --delete \
+            --exclude='venv/' --exclude='__pycache__/' --exclude='*.pyc' \
+            --exclude='.pytest_cache/' --exclude='staticfiles/' --exclude='media/' \
+            -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem" \
+            backend-service-medical_linux/ ubuntu@"$SERVER_IP":/opt/backend/
+          echo "Backend synchronise."
+
+      - name: Synchroniser frontend
+        env:
+          SERVER_IP: ${{ steps.get_ip.outputs.server_ip }}
+        run: |
+          rsync -az --delete \
+            --exclude='node_modules/' --exclude='dist/' --exclude='build/' \
+            -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem" \
+            frontend-service-medical_linux/ ubuntu@"$SERVER_IP":/opt/frontend/
+          echo "Frontend synchronise."
+
+      - name: Copier dumps SQL
+        env:
+          SERVER_IP: ${{ steps.get_ip.outputs.server_ip }}
+        run: |
+          rsync -az \
+            -e "ssh -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem" \
+            backend-service-medical_linux/db/ ubuntu@"$SERVER_IP":/tmp/sql_dumps/
+          echo "Dumps SQL copies."
+
+      - name: Copier et executer deploy_app.sh
+        env:
+          SERVER_IP: ${{ steps.get_ip.outputs.server_ip }}
           MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
-        timeout-minutes: 20
+          DB_APP_PASSWORD: ${{ secrets.DB_APP_PASSWORD }}
+          DJANGO_SECRET_KEY: ${{ secrets.DJANGO_SECRET_KEY }}
         run: |
-          ssh -o StrictHostKeyChecking=no \
-              -o ServerAliveInterval=30 \
-              -o ServerAliveCountMax=20 \
-              -o ConnectTimeout=30 \
-              -i ~/.ssh/labsuser.pem \
-              ubuntu@"$SERVER_IP" \
-              "chmod +x /tmp/setup.sh && sudo VM_EXISTS='$VM_EXISTS' ELASTIC_IP='$ELASTIC_IP' DB_APP_PASSWORD='$DB_APP_PASSWORD' MYSQL_ROOT_PASSWORD='$MYSQL_ROOT_PASSWORD' bash /tmp/setup.sh"
-
-  # ── Job 4 : demarrer les services ───────────────────────────────────────
-  run:
-    name: "Job 4 - Start Services"
-    runs-on: ubuntu-latest
-    needs: [check, terraform, setup]
-    if: always() && needs.setup.result == 'success'
-    steps:
-      - name: Determiner IP du serveur
-        id: get_ip
-        run: |
-          if [ "${{ needs.check.outputs.vm_exists }}" == "true" ]; then
-            echo "server_ip=${{ needs.check.outputs.server_ip }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "server_ip=${{ needs.terraform.outputs.server_ip }}" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Configurer SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/labsuser.pem
-          chmod 600 ~/.ssh/labsuser.pem
-
-      - name: Ecrire le script de demarrage
-        env:
-          REMOTE_SCRIPT: |
-            #!/bin/bash
-            set -e
-
-            echo "=== Attente du bootstrap user_data (max 25 min) ==="
-            for i in $(seq 1 50); do
-              if grep -q "Bootstrap complete" /var/log/medical-bootstrap.log 2>/dev/null; then
-                echo "Bootstrap complete detecte apres $((i*30))s"
-                break
-              fi
-              if [ "$i" -eq 50 ]; then
-                echo "WARN: timeout 25min - etat du bootstrap:"
-                tail -10 /var/log/medical-bootstrap.log 2>/dev/null || true
-              else
-                echo "  Attente $i/50 (30s)..."
-                sleep 30
-              fi
-            done
-
-            echo "=== MySQL ==="
-            sudo systemctl is-active mysql || sudo systemctl start mysql
-            sleep 2
-
-            echo "=== Liberation port 8000 ==="
-            sudo fuser -k 8000/tcp 2>/dev/null || true
-            sudo systemctl stop medical-backend 2>/dev/null || true
-            sleep 2
-
-            echo "=== Backend ==="
-            if [ -f /opt/backend/venv/bin/python ]; then
-              echo "Venv OK - lancement runserver"
-            elif [ -f /opt/backend/requirements.txt ]; then
-              echo "Venv absent - recreation..."
-              sudo rm -rf /opt/backend/venv
-              sudo python3 -m venv /opt/backend/venv
-              sudo /opt/backend/venv/bin/pip install -r /opt/backend/requirements.txt -q
-              sudo chown -R ubuntu:ubuntu /opt/backend/venv
-            else
-              echo "ERROR: /opt/backend non configure - bootstrap incomplet"
-              tail -30 /var/log/medical-bootstrap.log 2>/dev/null || true
-              exit 1
-            fi
-
-            echo "=== Lancement Django via systemd ==="
-            printf '[Unit]\nDescription=Medical Backend Django\nAfter=network.target mysql.service\nWants=mysql.service\n\n[Service]\nType=simple\nUser=ubuntu\nWorkingDirectory=/opt/backend\nExecStart=/opt/backend/venv/bin/python manage.py runserver 0.0.0.0:8000\nRestart=always\nRestartSec=5\nStandardOutput=append:/tmp/backend.log\nStandardError=append:/tmp/backend.log\nEnvironment=PYTHONUNBUFFERED=1\n\n[Install]\nWantedBy=multi-user.target\n' | sudo tee /etc/systemd/system/medical-backend.service > /dev/null
-            sudo systemctl daemon-reload
-            sudo systemctl enable medical-backend
-            sudo systemctl restart medical-backend
-            sleep 5
-            STATUS=$(sudo systemctl is-active medical-backend 2>/dev/null || echo "unknown")
-            echo "Backend service : $STATUS"
-
-            echo "=== nginx ==="
-            sudo systemctl is-active nginx || sudo systemctl start nginx
-            sleep 5
-            echo "=== Endpoints ==="
-            curl -s -o /dev/null -w "Frontend :80   HTTP %{http_code}\n" http://localhost/ || true
-            curl -s -o /dev/null -w "Backend  :8000 HTTP %{http_code}\n" http://localhost:8000/api/ || true
-            echo "=== Logs backend ==="
-            tail -10 /tmp/backend.log || true
-        run: printf '%s' "$REMOTE_SCRIPT" > /tmp/start_services.sh
-
-      - name: Copier et executer le script de demarrage
-        env:
-          SERVER_IP: ${{ steps.get_ip.outputs.server_ip }}
-        timeout-minutes: 10
-        run: |
-          scp -o StrictHostKeyChecking=no \
-              -o ServerAliveInterval=30 \
-              -o ServerAliveCountMax=10 \
-              -i ~/.ssh/labsuser.pem /tmp/start_services.sh ubuntu@"$SERVER_IP":/tmp/start_services.sh
-          ssh -o StrictHostKeyChecking=no \
-              -o ServerAliveInterval=30 \
-              -o ServerAliveCountMax=10 \
-              -i ~/.ssh/labsuser.pem ubuntu@"$SERVER_IP" \
-              "chmod +x /tmp/start_services.sh && sudo bash /tmp/start_services.sh"
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem \
+            scripts/deploy_app.sh ubuntu@"$SERVER_IP":/tmp/deploy_app.sh
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem ubuntu@"$SERVER_IP" \
+            "chmod +x /tmp/deploy_app.sh && \
+             sudo SERVER_IP='$SERVER_IP' \
+                  MYSQL_ROOT_PASSWORD='$MYSQL_ROOT_PASSWORD' \
+                  DB_APP_PASSWORD='$DB_APP_PASSWORD' \
+                  DJANGO_SECRET_KEY='$DJANGO_SECRET_KEY' \
+                  bash /tmp/deploy_app.sh"
 
       - name: Afficher les URLs
         env:
@@ -362,8 +293,7 @@ jobs:
           echo "=========================================="
           echo "  PROJET MEDICAL - DEPLOYE AVEC SUCCES"
           echo "=========================================="
-          echo "  Frontend : http://$SERVER_IP"
-          echo "  Backend  : http://$SERVER_IP:8000"
-          echo "  API      : http://$SERVER_IP/api/"
-          echo "  SSH      : ssh -i labsuser.pem ubuntu@$SERVER_IP"
+          echo "  Application : http://$SERVER_IP/"
+          echo "  Admin       : http://$SERVER_IP/api/admin/"
+          echo "  SSH         : ssh -i labsuser.pem ubuntu@$SERVER_IP"
           echo "=========================================="

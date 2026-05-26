@@ -11,7 +11,7 @@ on:
       force_alert:
         description: "Forcer l'envoi d'une alerte même sans CVE"
         type: boolean
-        default: false
+        default: true
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -161,13 +161,7 @@ jobs:
     name: "Telegram - Alertes DevSecOps via Mistral AI"
     runs-on: ubuntu-latest
     needs: sast-scan
-    if: >
-      always() &&
-      (
-        needs.sast-scan.outputs.has_findings == 'true' ||
-        github.event.inputs.force_alert == 'true' ||
-        github.event_name == 'workflow_dispatch'
-      )
+    if: always() && needs.sast-scan.result == 'success'
 
     steps:
       - name: Checkout
@@ -218,7 +212,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
           MISTRAL_API_KEY:    ${{ secrets.MISTRAL_API_KEY }}
-          DAST_RESULT:        ${{ github.event.workflow_run.conclusion || 'manual' }}
+          DAST_RESULT:        ${{ github.event.workflow_run.conclusion || github.event.inputs.force_alert && 'manual' || 'manual' }}
           GITHUB_REPOSITORY:  ${{ github.repository }}
           GITHUB_RUN_ID:      ${{ github.run_id }}
         run: |

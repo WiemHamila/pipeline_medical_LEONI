@@ -272,7 +272,15 @@ def main() -> int:
     vulnerable_pkgs          = parse_pipaudit(pipaudit_data)
     bandit_high, bandit_med, bandit_top = parse_bandit(bandit_data)
 
-    total_deps   = len(pipaudit_data) if isinstance(pipaudit_data, list) else 0
+    # Normalise pipaudit_data en liste de dicts pour les calculs suivants
+    if isinstance(pipaudit_data, list):
+        all_deps = pipaudit_data
+    elif isinstance(pipaudit_data, dict):
+        all_deps = pipaudit_data.get("dependencies", [])
+    else:
+        all_deps = []
+
+    total_deps   = len(all_deps)
     total_cves   = sum(len(p["cves"]) for p in vulnerable_pkgs)
 
     print(f"[INFO] Packages vulnérables : {len(vulnerable_pkgs)}")
@@ -325,7 +333,7 @@ def main() -> int:
 
     # Points positifs
     positives = []
-    safe_pkgs = [d for d in (pipaudit_data or []) if not d.get("vulns")]
+    safe_pkgs = [d for d in all_deps if isinstance(d, dict) and not d.get("vulns")]
     if safe_pkgs:
         names = ", ".join(d["name"] for d in safe_pkgs[:4])
         positives.append(f"{len(safe_pkgs)} package(s) sans CVE : {names}")
