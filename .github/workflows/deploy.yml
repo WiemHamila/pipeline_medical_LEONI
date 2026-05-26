@@ -5,7 +5,6 @@ on:
     branches: [main]
   workflow_dispatch:
 
-
 env:
   AWS_REGION: us-east-1
   TF_VERSION: "1.7.5"
@@ -34,41 +33,77 @@ jobs:
       - name: Verifier etat EC2 et demarrer si stoppee
         id: check_vm
         run: |
-          # Recuperer l'IP depuis le tfstate local
-          SERVER_IP=""
-          if [ -f terraform/terraform.tfstate ]; then
-            SERVER_IP=$(jq -r '[.resources[] | select(.type=="aws_eip") | .instances[0].attributes.public_ip // ""] | first // ""' terraform/terraform.tfstate 2>/dev/null || echo "")
-          fi
-
-          # Interroger AWS directement pour connaitre l'etat reel de l'instance
+          # ─── 1. Chercher UNE SEULE instance active (running ou stopped) ────────
+          # On prend la plus recente pour eviter d'en avoir plusieurs
           INSTANCE_ID=$(aws ec2 describe-instances \
             --filters "Name=tag:Name,Values=medical-app-server" \
                       "Name=instance-state-name,Values=running,stopped" \
-            --query "Reservations[0].Instances[0].InstanceId" \
+            --query "sort_by(Reservations[].Instances[], &LaunchTime)[-1].InstanceId" \
             --output text 2>/dev/null || echo "None")
 
           INSTANCE_STATE=$(aws ec2 describe-instances \
             --filters "Name=tag:Name,Values=medical-app-server" \
                       "Name=instance-state-name,Values=running,stopped" \
-            --query "Reservations[0].Instances[0].State.Name" \
+            --query "sort_by(Reservations[].Instances[], &LaunchTime)[-1].State.Name" \
             --output text 2>/dev/null || echo "None")
 
           echo "Instance ID    : $INSTANCE_ID"
           echo "Instance State : $INSTANCE_STATE"
 
-          # Instance stoppee intentionnellement : la demarrer, NE PAS la recreer
+          # ─── 2. Verifier et terminer les instances dupliquees (sauf la plus recente) ──
+          ALL_INSTANCE_IDS=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=medical-app-server" \
+                      "Name=instance-state-name,Values=running,stopped" \
+            --query "sort_by(Reservations[].Instances[], &LaunchTime)[:-1].InstanceId" \
+            --output text 2>/dev/null || echo "")
+
+          if [ -n "$ALL_INSTANCE_IDS" ] && [ "$ALL_INSTANCE_IDS" != "None" ]; then
+            echo "WARN: Instances dupliquees detectees — arret des anciennes : $ALL_INSTANCE_IDS"
+            for OLD_ID in $ALL_INSTANCE_IDS; do
+              aws ec2 terminate-instances --instance-ids "$OLD_ID" 2>/dev/null || true
+              echo "  Instance $OLD_ID terminee"
+            done
+          fi
+
+          # ─── 3. Recuperer l'IP Elastic associee a cette instance ────────────
+          SERVER_IP=$(aws ec2 describe-addresses \
+            --filters "Name=tag:Name,Values=medical-app-eip" \
+            --query "Addresses[0].PublicIp" \
+            --output text 2>/dev/null || echo "")
+
+          if [ -z "$SERVER_IP" ] || [ "$SERVER_IP" = "None" ] || [ "$SERVER_IP" = "null" ]; then
+            # Fallback : lire depuis le tfstate si disponible
+            if [ -f terraform/terraform.tfstate ]; then
+              SERVER_IP=$(jq -r '[.resources[] | select(.type=="aws_eip") | .instances[0].attributes.public_ip // ""] | first // ""' terraform/terraform.tfstate 2>/dev/null || echo "")
+            fi
+          fi
+
+          echo "Elastic IP     : $SERVER_IP"
+
+          # ─── 4. Instance stoppee : demarrer sans recreer ────────────────────
           if [ "$INSTANCE_STATE" = "stopped" ]; then
             echo "Instance stoppee detectee — demarrage sans recreation..."
             aws ec2 start-instances --instance-ids "$INSTANCE_ID"
-            echo "Attente etat 'running' (max 5 min)..."
+            echo "Attente etat running (max 5 min)..."
             aws ec2 wait instance-running --instance-ids "$INSTANCE_ID"
 
-            # Recuperer l'IP si elle n'etait pas dans le tfstate
-            if [ -z "$SERVER_IP" ] || [ "$SERVER_IP" = "null" ]; then
-              SERVER_IP=$(aws ec2 describe-instances \
-                --instance-ids "$INSTANCE_ID" \
-                --query "Reservations[0].Instances[0].PublicIpAddress" \
+            # Reassocier l'EIP si elle n'est pas encore associee
+            EIP_ASSOC=$(aws ec2 describe-addresses \
+              --filters "Name=tag:Name,Values=medical-app-eip" \
+              --query "Addresses[0].AssociationId" \
+              --output text 2>/dev/null || echo "")
+
+            if [ -z "$EIP_ASSOC" ] || [ "$EIP_ASSOC" = "None" ] || [ "$EIP_ASSOC" = "null" ]; then
+              EIP_ALLOC=$(aws ec2 describe-addresses \
+                --filters "Name=tag:Name,Values=medical-app-eip" \
+                --query "Addresses[0].AllocationId" \
                 --output text 2>/dev/null || echo "")
+              if [ -n "$EIP_ALLOC" ] && [ "$EIP_ALLOC" != "None" ]; then
+                echo "Reassociation EIP $SERVER_IP -> instance $INSTANCE_ID..."
+                aws ec2 associate-address \
+                  --instance-id "$INSTANCE_ID" \
+                  --allocation-id "$EIP_ALLOC" 2>/dev/null || true
+              fi
             fi
 
             echo "Attente SSH sur $SERVER_IP (max 5 min)..."
@@ -90,8 +125,8 @@ jobs:
             exit 0
           fi
 
-          # Instance deja en cours d'execution : verifier SSH
-          if [ "$INSTANCE_STATE" = "running" ] && [ -n "$SERVER_IP" ] && [ "$SERVER_IP" != "null" ]; then
+          # ─── 5. Instance deja running : verifier SSH ─────────────────────────
+          if [ "$INSTANCE_STATE" = "running" ] && [ -n "$SERVER_IP" ] && [ "$SERVER_IP" != "None" ] && [ "$SERVER_IP" != "null" ]; then
             echo "Instance running — verification SSH sur $SERVER_IP..."
             mkdir -p ~/.ssh
             echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/labsuser.pem
@@ -104,8 +139,8 @@ jobs:
             fi
           fi
 
-          # Aucune instance trouvee (ni running ni stopped) : Terraform cree une nouvelle
-          echo "Aucune instance existante — creation via Terraform"
+          # ─── 6. Aucune instance valide : laisser Terraform creer ─────────────
+          echo "Aucune instance existante valide — creation via Terraform"
           echo "vm_exists=false" >> "$GITHUB_OUTPUT"
           echo "server_ip="      >> "$GITHUB_OUTPUT"
 
@@ -142,17 +177,28 @@ jobs:
       - name: Importer ressources AWS existantes
         working-directory: ./terraform
         run: |
-          SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=medical-app-sg" --query "SecurityGroups[0].GroupId" --output text 2>/dev/null || echo "None")
+          SG_ID=$(aws ec2 describe-security-groups \
+            --filters "Name=group-name,Values=medical-app-sg" \
+            --query "SecurityGroups[0].GroupId" \
+            --output text 2>/dev/null || echo "None")
           if [ "$SG_ID" != "None" ] && [ "$SG_ID" != "null" ] && [ -n "$SG_ID" ]; then
             terraform import aws_security_group.medical_sg "$SG_ID" 2>/dev/null || true
           fi
 
-          INSTANCE_ID=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=medical-app-server" "Name=instance-state-name,Values=running,stopped" --query "Reservations[0].Instances[0].InstanceId" --output text 2>/dev/null || echo "None")
+          # Import de la SEULE instance existante (la plus recente)
+          INSTANCE_ID=$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=medical-app-server" \
+                      "Name=instance-state-name,Values=running,stopped" \
+            --query "sort_by(Reservations[].Instances[], &LaunchTime)[-1].InstanceId" \
+            --output text 2>/dev/null || echo "None")
           if [ "$INSTANCE_ID" != "None" ] && [ "$INSTANCE_ID" != "null" ] && [ -n "$INSTANCE_ID" ]; then
             terraform import aws_instance.medical_app "$INSTANCE_ID" 2>/dev/null || true
           fi
 
-          EIP_ALLOC=$(aws ec2 describe-addresses --filters "Name=tag:Name,Values=medical-app-eip" --query "Addresses[0].AllocationId" --output text 2>/dev/null || echo "None")
+          EIP_ALLOC=$(aws ec2 describe-addresses \
+            --filters "Name=tag:Name,Values=medical-app-eip" \
+            --query "Addresses[0].AllocationId" \
+            --output text 2>/dev/null || echo "None")
           if [ "$EIP_ALLOC" != "None" ] && [ "$EIP_ALLOC" != "null" ] && [ -n "$EIP_ALLOC" ]; then
             terraform import aws_eip.medical_eip "$EIP_ALLOC" 2>/dev/null || true
           fi
@@ -160,7 +206,10 @@ jobs:
       - name: Terraform Plan
         working-directory: ./terraform
         run: |
-          terraform plan -var="db_app_password=${{ secrets.DB_APP_PASSWORD }}" -var="mysql_root_password=${{ secrets.MYSQL_ROOT_PASSWORD }}" -out=tfplan
+          terraform plan \
+            -var="db_app_password=${{ secrets.DB_APP_PASSWORD }}" \
+            -var="mysql_root_password=${{ secrets.MYSQL_ROOT_PASSWORD }}" \
+            -out=tfplan
 
       - name: Terraform Apply
         working-directory: ./terraform
@@ -170,7 +219,11 @@ jobs:
         id: tf_output
         working-directory: ./terraform
         run: |
-          SERVER_IP=$(terraform output -raw elastic_ip)
+          SERVER_IP=$(terraform output -raw elastic_ip 2>/dev/null || echo "")
+          if [ -z "$SERVER_IP" ] || [ "$SERVER_IP" = "null" ]; then
+            echo "ERREUR : elastic_ip output vide depuis Terraform"
+            exit 1
+          fi
           echo "server_ip=$SERVER_IP" >> "$GITHUB_OUTPUT"
           echo "Nouvelle VM : $SERVER_IP"
 
@@ -201,14 +254,49 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ─── FIX PRINCIPAL : resolution d'IP robuste ──────────────────────────
+      # Priorite : 1) VM existante (check) → 2) nouvelle VM (terraform) → 3) EIP AWS direct → erreur
       - name: Determiner IP du serveur
         id: get_ip
         run: |
-          if [ "${{ needs.check.outputs.vm_exists }}" == "true" ]; then
-            echo "server_ip=${{ needs.check.outputs.server_ip }}" >> "$GITHUB_OUTPUT"
+          VM_EXISTS="${{ needs.check.outputs.vm_exists }}"
+          IP_FROM_CHECK="${{ needs.check.outputs.server_ip }}"
+          IP_FROM_TF="${{ needs.terraform.outputs.server_ip }}"
+
+          echo "vm_exists     = $VM_EXISTS"
+          echo "ip from check = $IP_FROM_CHECK"
+          echo "ip from tf    = $IP_FROM_TF"
+
+          # Cas 1 : VM existante (running ou stopped redemarree)
+          if [ "$VM_EXISTS" == "true" ] && [ -n "$IP_FROM_CHECK" ] && [ "$IP_FROM_CHECK" != "null" ]; then
+            echo "Source IP : check (VM existante) → $IP_FROM_CHECK"
+            echo "server_ip=$IP_FROM_CHECK" >> "$GITHUB_OUTPUT"
+
+          # Cas 2 : Nouvelle VM cree par Terraform
+          elif [ -n "$IP_FROM_TF" ] && [ "$IP_FROM_TF" != "null" ]; then
+            echo "Source IP : terraform (nouvelle VM) → $IP_FROM_TF"
+            echo "server_ip=$IP_FROM_TF" >> "$GITHUB_OUTPUT"
+
+          # Cas 3 : Fallback AWS direct sur l'EIP (filet de securite)
           else
-            echo "server_ip=${{ needs.terraform.outputs.server_ip }}" >> "$GITHUB_OUTPUT"
+            echo "Fallback : interrogation AWS pour l'EIP..."
+            IP_FROM_AWS=$(aws ec2 describe-addresses \
+              --filters "Name=tag:Name,Values=medical-app-eip" \
+              --query "Addresses[0].PublicIp" \
+              --output text 2>/dev/null || echo "")
+            if [ -n "$IP_FROM_AWS" ] && [ "$IP_FROM_AWS" != "None" ] && [ "$IP_FROM_AWS" != "null" ]; then
+              echo "Source IP : AWS EIP fallback → $IP_FROM_AWS"
+              echo "server_ip=$IP_FROM_AWS" >> "$GITHUB_OUTPUT"
+            else
+              echo "ERREUR : aucune IP disponible (check=$IP_FROM_CHECK, tf=$IP_FROM_TF, aws=$IP_FROM_AWS)"
+              exit 1
+            fi
           fi
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
 
       - name: Configurer SSH
         run: |
@@ -234,7 +322,8 @@ jobs:
         env:
           SERVER_IP: ${{ steps.get_ip.outputs.server_ip }}
         run: |
-          scp -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem scripts/setup.sh ubuntu@"$SERVER_IP":/tmp/setup.sh
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem \
+            scripts/setup.sh ubuntu@"$SERVER_IP":/tmp/setup.sh
 
       - name: Executer le setup
         env:
@@ -251,7 +340,12 @@ jobs:
               -o ConnectTimeout=30 \
               -i ~/.ssh/labsuser.pem \
               ubuntu@"$SERVER_IP" \
-              "chmod +x /tmp/setup.sh && sudo VM_EXISTS='$VM_EXISTS' ELASTIC_IP='$ELASTIC_IP' DB_APP_PASSWORD='$DB_APP_PASSWORD' MYSQL_ROOT_PASSWORD='$MYSQL_ROOT_PASSWORD' bash /tmp/setup.sh"
+              "chmod +x /tmp/setup.sh && sudo \
+                VM_EXISTS='$VM_EXISTS' \
+                ELASTIC_IP='$ELASTIC_IP' \
+                DB_APP_PASSWORD='$DB_APP_PASSWORD' \
+                MYSQL_ROOT_PASSWORD='$MYSQL_ROOT_PASSWORD' \
+                bash /tmp/setup.sh"
 
   # ── Job 4 : demarrer les services ───────────────────────────────────────
   run:
@@ -260,14 +354,45 @@ jobs:
     needs: [check, terraform, setup]
     if: always() && needs.setup.result == 'success'
     steps:
+      # ─── FIX PRINCIPAL : meme logique robuste que Job 3 ──────────────────
       - name: Determiner IP du serveur
         id: get_ip
         run: |
-          if [ "${{ needs.check.outputs.vm_exists }}" == "true" ]; then
-            echo "server_ip=${{ needs.check.outputs.server_ip }}" >> "$GITHUB_OUTPUT"
+          VM_EXISTS="${{ needs.check.outputs.vm_exists }}"
+          IP_FROM_CHECK="${{ needs.check.outputs.server_ip }}"
+          IP_FROM_TF="${{ needs.terraform.outputs.server_ip }}"
+
+          echo "vm_exists     = $VM_EXISTS"
+          echo "ip from check = $IP_FROM_CHECK"
+          echo "ip from tf    = $IP_FROM_TF"
+
+          if [ "$VM_EXISTS" == "true" ] && [ -n "$IP_FROM_CHECK" ] && [ "$IP_FROM_CHECK" != "null" ]; then
+            echo "Source IP : check (VM existante) → $IP_FROM_CHECK"
+            echo "server_ip=$IP_FROM_CHECK" >> "$GITHUB_OUTPUT"
+
+          elif [ -n "$IP_FROM_TF" ] && [ "$IP_FROM_TF" != "null" ]; then
+            echo "Source IP : terraform (nouvelle VM) → $IP_FROM_TF"
+            echo "server_ip=$IP_FROM_TF" >> "$GITHUB_OUTPUT"
+
           else
-            echo "server_ip=${{ needs.terraform.outputs.server_ip }}" >> "$GITHUB_OUTPUT"
+            echo "Fallback : interrogation AWS pour l'EIP..."
+            IP_FROM_AWS=$(aws ec2 describe-addresses \
+              --filters "Name=tag:Name,Values=medical-app-eip" \
+              --query "Addresses[0].PublicIp" \
+              --output text 2>/dev/null || echo "")
+            if [ -n "$IP_FROM_AWS" ] && [ "$IP_FROM_AWS" != "None" ] && [ "$IP_FROM_AWS" != "null" ]; then
+              echo "Source IP : AWS EIP fallback → $IP_FROM_AWS"
+              echo "server_ip=$IP_FROM_AWS" >> "$GITHUB_OUTPUT"
+            else
+              echo "ERREUR : aucune IP disponible (check=$IP_FROM_CHECK, tf=$IP_FROM_TF, aws=$IP_FROM_AWS)"
+              exit 1
+            fi
           fi
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
 
       - name: Configurer SSH
         run: |
