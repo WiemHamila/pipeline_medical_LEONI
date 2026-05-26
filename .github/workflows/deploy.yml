@@ -141,20 +141,26 @@ jobs:
 
       - name: Importer ressources AWS existantes
         working-directory: ./terraform
+        env:
+          TF_VAR_db_app_password: ${{ secrets.DB_APP_PASSWORD }}
+          TF_VAR_mysql_root_password: ${{ secrets.MYSQL_ROOT_PASSWORD }}
         run: |
           SG_ID=$(aws ec2 describe-security-groups --filters "Name=group-name,Values=medical-app-sg" --query "SecurityGroups[0].GroupId" --output text 2>/dev/null || echo "None")
           if [ "$SG_ID" != "None" ] && [ "$SG_ID" != "null" ] && [ -n "$SG_ID" ]; then
-            terraform import aws_security_group.medical_sg "$SG_ID" 2>/dev/null || true
+            echo "Import SG : $SG_ID"
+            terraform import aws_security_group.medical_sg "$SG_ID" || true
           fi
 
           INSTANCE_ID=$(aws ec2 describe-instances --filters "Name=tag:Name,Values=medical-app-server" "Name=instance-state-name,Values=running,stopped" --query "Reservations[0].Instances[0].InstanceId" --output text 2>/dev/null || echo "None")
           if [ "$INSTANCE_ID" != "None" ] && [ "$INSTANCE_ID" != "null" ] && [ -n "$INSTANCE_ID" ]; then
-            terraform import aws_instance.medical_app "$INSTANCE_ID" 2>/dev/null || true
+            echo "Import EC2 : $INSTANCE_ID"
+            terraform import aws_instance.medical_app "$INSTANCE_ID" || true
           fi
 
           EIP_ALLOC=$(aws ec2 describe-addresses --filters "Name=tag:Name,Values=medical-app-eip" --query "Addresses[0].AllocationId" --output text 2>/dev/null || echo "None")
           if [ "$EIP_ALLOC" != "None" ] && [ "$EIP_ALLOC" != "null" ] && [ -n "$EIP_ALLOC" ]; then
-            terraform import aws_eip.medical_eip "$EIP_ALLOC" 2>/dev/null || true
+            echo "Import EIP : $EIP_ALLOC"
+            terraform import aws_eip.medical_eip "$EIP_ALLOC" || true
           fi
 
       - name: Terraform Plan
