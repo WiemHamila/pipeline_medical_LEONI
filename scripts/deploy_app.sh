@@ -25,6 +25,14 @@ echo "  Deploy Medical LEONI — $(date)"
 echo "  IP serveur : $SERVER_IP"
 echo "=========================================================="
 
+# ── Attente cloud-init (nouveau boot Terraform) ────────────────────────────
+# Sur une nouvelle instance, user_data.sh installe MySQL/nginx via cloud-init.
+# On bloque ici jusqu'à ce qu'il termine (retour immédiat si déjà fait).
+if command -v cloud-init &>/dev/null; then
+  echo "  [cloud-init] attente fin du bootstrap..."
+  cloud-init status --wait 2>/dev/null && echo "  [cloud-init] terminé." || echo "  [cloud-init] terminé (ou absent)."
+fi
+
 # ── [1/8] Répertoires ─────────────────────────────────────────────────────
 echo ""
 echo "=== [1/8] Préparation des répertoires ==="
@@ -65,9 +73,14 @@ fi
 # ── [3/8] Dépendances système ──────────────────────────────────────────────
 echo ""
 echo "=== [3/8] Dépendances système ==="
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y python3-venv python3-dev libmysqlclient-dev \
-  pkg-config build-essential 2>&1 | tail -3
+# mysql-server et nginx inclus pour garantir l'idempotence même si
+# cloud-init n'a pas encore terminé ou a échoué sur une nouvelle instance
+apt-get install -y mysql-server nginx \
+  python3-venv python3-dev libmysqlclient-dev \
+  pkg-config build-essential 2>&1 | tail -5
+systemctl enable mysql nginx && systemctl start mysql nginx || true
 
 # Node.js via NodeSource (évite les conflits apt)
 if ! command -v node &>/dev/null || [ "$(node --version 2>/dev/null | cut -d. -f1 | tr -d v)" -lt 18 ]; then
