@@ -1,0 +1,246 @@
+name: "DevSecOps - Alertes Telegram"
+
+# Déclenché après le DAST ou manuellement.
+# Exécute SAST (Bandit + pip-audit), analyse via Mistral, notifie sur Telegram.
+on:
+  workflow_run:
+    workflows: ["DAST - Tests Dynamiques de Securite"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      force_alert:
+        description: "Forcer l'envoi d'une alerte même sans CVE"
+        type: boolean
+        default: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  BACKEND_DIR: backend-service-medical_linux
+
+permissions:
+  contents: read
+  actions: read
+
+# =============================================================
+#  Flux de données DevSecOps → Telegram
+#
+#  Job 1 — sast-scan    : Bandit (code) + pip-audit (CVEs)
+#  Job 2 — telegram-notify : Mistral analyse + envoi Telegram
+# =============================================================
+
+jobs:
+
+  # ── Job 1 : Analyse statique SAST ────────────────────────────────────────
+  sast-scan:
+    name: "SAST - Bandit + pip-audit (CVEs Python)"
+    runs-on: ubuntu-latest
+    outputs:
+      has_findings: ${{ steps.summary.outputs.has_findings }}
+      total_cves:   ${{ steps.summary.outputs.total_cves }}
+      bandit_high:  ${{ steps.summary.outputs.bandit_high }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ── Installer les outils SAST ──────────────────────────────────────
+      - name: Installer Bandit et pip-audit
+        run: |
+          pip install --quiet --upgrade pip
+          pip install --quiet bandit pip-audit
+
+      # ── Bandit : analyse statique du code Django ───────────────────────
+      - name: "Bandit - Scan du backend Django"
+        run: |
+          bandit \
+            -r "$BACKEND_DIR/" \
+            -f json \
+            -o bandit_results.json \
+            --exit-zero \
+            -x "$BACKEND_DIR/venv,$BACKEND_DIR/.pytest_cache,$BACKEND_DIR/migrations" \
+            2>/dev/null || true
+
+          echo "=== Résumé Bandit ==="
+          python3 - <<'PY'
+          import json
+          data = json.load(open("bandit_results.json"))
+          results = data.get("results", [])
+          high   = sum(1 for r in results if r.get("issue_severity") in ("HIGH","CRITICAL"))
+          medium = sum(1 for r in results if r.get("issue_severity") == "MEDIUM")
+          low    = sum(1 for r in results if r.get("issue_severity") == "LOW")
+          print(f"  HIGH/CRITICAL : {high}")
+          print(f"  MEDIUM        : {medium}")
+          print(f"  LOW           : {low}")
+          PY
+
+      # ── pip-audit : scan CVEs sur requirements.txt ─────────────────────
+      - name: "pip-audit - Scan CVEs dépendances Python"
+        run: |
+          pip-audit \
+            -r "$BACKEND_DIR/requirements.txt" \
+            --format json \
+            --output pipaudit_results.json \
+            2>/dev/null || true
+
+          echo "=== Résumé pip-audit ==="
+          python3 - <<'PY'
+          import json, sys
+          try:
+              data = json.load(open("pipaudit_results.json"))
+          except Exception:
+              data = []
+          if isinstance(data, dict):
+              deps = data.get("dependencies", [])
+          else:
+              deps = data
+          vuln_pkgs = [d for d in deps if d.get("vulns")]
+          total_cves = sum(len(d["vulns"]) for d in vuln_pkgs)
+          print(f"  Packages vulnérables : {len(vuln_pkgs)}")
+          print(f"  CVEs total           : {total_cves}")
+          for d in vuln_pkgs[:5]:
+              ids = [v.get("id","?") for v in d["vulns"]]
+              print(f"  {d['name']}=={d.get('version','?')} -> {', '.join(ids)}")
+          PY
+
+      # ── Résumé pour outputs ────────────────────────────────────────────
+      - name: Calculer résumé
+        id: summary
+        run: |
+          python3 - <<'PY'
+          import json, os
+
+          def load(path):
+              try:
+                  return json.load(open(path))
+              except Exception:
+                  return None
+
+          pipaudit = load("pipaudit_results.json") or []
+          bandit   = load("bandit_results.json") or {}
+
+          if isinstance(pipaudit, dict):
+              deps = pipaudit.get("dependencies", [])
+          else:
+              deps = pipaudit
+
+          total_cves  = sum(len(d.get("vulns", [])) for d in deps)
+          bandit_high = sum(
+              1 for r in bandit.get("results", [])
+              if r.get("issue_severity") in ("HIGH", "CRITICAL")
+          )
+          has_findings = total_cves > 0 or bandit_high > 0
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"total_cves={total_cves}\n")
+              f.write(f"bandit_high={bandit_high}\n")
+              f.write(f"has_findings={'true' if has_findings else 'false'}\n")
+
+          print(f"total_cves={total_cves}")
+          print(f"bandit_high={bandit_high}")
+          print(f"has_findings={has_findings}")
+          PY
+
+      # ── Archiver les résultats ─────────────────────────────────────────
+      - name: Upload résultats SAST
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sast-results-${{ github.run_id }}
+          path: |
+            bandit_results.json
+            pipaudit_results.json
+          retention-days: 7
+
+  # ── Job 2 : Analyse Mistral + Envoi Telegram ─────────────────────────────
+  telegram-notify:
+    name: "Telegram - Alertes DevSecOps via Mistral AI"
+    runs-on: ubuntu-latest
+    needs: sast-scan
+    if: >
+      always() &&
+      (
+        needs.sast-scan.outputs.has_findings == 'true' ||
+        github.event.inputs.force_alert == 'true' ||
+        github.event_name == 'workflow_dispatch'
+      )
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Télécharger résultats SAST ─────────────────────────────────────
+      - name: Télécharger résultats SAST
+        uses: actions/download-artifact@v4
+        with:
+          name: sast-results-${{ github.run_id }}
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer requests
+        run: pip install --quiet requests
+
+      # ── Vérification des secrets Telegram ─────────────────────────────
+      - name: Vérifier configuration Telegram
+        run: |
+          if [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
+            echo "⚠️  TELEGRAM_CHAT_ID non configuré !"
+            echo ""
+            echo "Pour obtenir votre Chat ID :"
+            echo "1. Envoyez un message au bot @medical_Leoni_bot sur Telegram"
+            echo "2. Appelez : https://api.telegram.org/bot\$TOKEN/getUpdates"
+            echo "3. Copiez le champ 'id' dans result[0].message.chat.id"
+            echo "4. Ajoutez-le comme secret GitHub : TELEGRAM_CHAT_ID"
+          else
+            echo "✅ TELEGRAM_CHAT_ID configuré"
+          fi
+          if [ -z "${{ secrets.TELEGRAM_BOT_TOKEN }}" ]; then
+            echo "⚠️  TELEGRAM_BOT_TOKEN non configuré ! Ajoutez le token du bot comme secret."
+          else
+            echo "✅ TELEGRAM_BOT_TOKEN configuré"
+          fi
+          if [ -z "${{ secrets.MISTRAL_API_KEY }}" ]; then
+            echo "⚠️  MISTRAL_API_KEY non configuré — remédiation par défaut sera utilisée"
+          else
+            echo "✅ MISTRAL_API_KEY configuré"
+          fi
+
+      # ── Lancer le script d'alerte ──────────────────────────────────────
+      - name: "Analyser et envoyer alertes sur Telegram"
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          MISTRAL_API_KEY:    ${{ secrets.MISTRAL_API_KEY }}
+          DAST_RESULT:        ${{ github.event.workflow_run.conclusion || 'manual' }}
+          GITHUB_REPOSITORY:  ${{ github.repository }}
+          GITHUB_RUN_ID:      ${{ github.run_id }}
+        run: |
+          echo "=== Lancement telegram_alert.py ==="
+          echo "  DAST result   : $DAST_RESULT"
+          echo "  Total CVEs    : ${{ needs.sast-scan.outputs.total_cves }}"
+          echo "  Bandit HIGH   : ${{ needs.sast-scan.outputs.bandit_high }}"
+          python3 scripts/telegram_alert.py
+
+      # ── Rapport de synthèse dans les logs CI ──────────────────────────
+      - name: Synthèse dans les logs CI
+        if: always()
+        env:
+          DAST_RESULT: ${{ github.event.workflow_run.conclusion || 'manual' }}
+        run: |
+          echo ""
+          echo "======================================================="
+          echo "  RAPPORT DEVSECOPS — PLATEFORME MEDICALE LEONI"
+          echo "======================================================="
+          echo "  SAST Bandit HIGH  : ${{ needs.sast-scan.outputs.bandit_high }}"
+          echo "  CVEs Python       : ${{ needs.sast-scan.outputs.total_cves }}"
+          echo "  DAST (ZAP)        : $DAST_RESULT"
+          echo "  Notifié sur       : Telegram @medical_Leoni_bot"
+          echo "  Analysé par       : Mistral AI (mistral-large-latest)"
+          echo "======================================================="
