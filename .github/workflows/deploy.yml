@@ -3,6 +3,8 @@ name: "Deploy Medical Project"
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+
 
 env:
   AWS_REGION: us-east-1
@@ -241,8 +243,15 @@ jobs:
           ELASTIC_IP: ${{ steps.get_ip.outputs.server_ip }}
           DB_APP_PASSWORD: ${{ secrets.DB_APP_PASSWORD }}
           MYSQL_ROOT_PASSWORD: ${{ secrets.MYSQL_ROOT_PASSWORD }}
+        timeout-minutes: 20
         run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem ubuntu@"$SERVER_IP" "chmod +x /tmp/setup.sh && sudo VM_EXISTS='$VM_EXISTS' ELASTIC_IP='$ELASTIC_IP' DB_APP_PASSWORD='$DB_APP_PASSWORD' MYSQL_ROOT_PASSWORD='$MYSQL_ROOT_PASSWORD' bash /tmp/setup.sh"
+          ssh -o StrictHostKeyChecking=no \
+              -o ServerAliveInterval=30 \
+              -o ServerAliveCountMax=20 \
+              -o ConnectTimeout=30 \
+              -i ~/.ssh/labsuser.pem \
+              ubuntu@"$SERVER_IP" \
+              "chmod +x /tmp/setup.sh && sudo VM_EXISTS='$VM_EXISTS' ELASTIC_IP='$ELASTIC_IP' DB_APP_PASSWORD='$DB_APP_PASSWORD' MYSQL_ROOT_PASSWORD='$MYSQL_ROOT_PASSWORD' bash /tmp/setup.sh"
 
   # ── Job 4 : demarrer les services ───────────────────────────────────────
   run:
@@ -311,30 +320,39 @@ jobs:
               exit 1
             fi
 
-            echo "=== Lancement Django runserver ==="
-            cd /opt/backend
-            source /opt/backend/venv/bin/activate
-            nohup python manage.py runserver 0.0.0.0:8000 > /tmp/backend.log 2>&1 &
-            echo $! > /tmp/backend.pid
-            deactivate
-            echo "Backend PID $(cat /tmp/backend.pid)"
+            echo "=== Lancement Django via systemd ==="
+            printf '[Unit]\nDescription=Medical Backend Django\nAfter=network.target mysql.service\nWants=mysql.service\n\n[Service]\nType=simple\nUser=ubuntu\nWorkingDirectory=/opt/backend\nExecStart=/opt/backend/venv/bin/python manage.py runserver 0.0.0.0:8000\nRestart=always\nRestartSec=5\nStandardOutput=append:/tmp/backend.log\nStandardError=append:/tmp/backend.log\nEnvironment=PYTHONUNBUFFERED=1\n\n[Install]\nWantedBy=multi-user.target\n' | sudo tee /etc/systemd/system/medical-backend.service > /dev/null
+            sudo systemctl daemon-reload
+            sudo systemctl enable medical-backend
+            sudo systemctl restart medical-backend
+            sleep 5
+            STATUS=$(sudo systemctl is-active medical-backend 2>/dev/null || echo "unknown")
+            echo "Backend service : $STATUS"
 
             echo "=== nginx ==="
             sudo systemctl is-active nginx || sudo systemctl start nginx
-            sleep 8
+            sleep 5
             echo "=== Endpoints ==="
             curl -s -o /dev/null -w "Frontend :80   HTTP %{http_code}\n" http://localhost/ || true
             curl -s -o /dev/null -w "Backend  :8000 HTTP %{http_code}\n" http://localhost:8000/api/ || true
             echo "=== Logs backend ==="
-            tail -5 /tmp/backend.log || true
+            tail -10 /tmp/backend.log || true
         run: printf '%s' "$REMOTE_SCRIPT" > /tmp/start_services.sh
 
       - name: Copier et executer le script de demarrage
         env:
           SERVER_IP: ${{ steps.get_ip.outputs.server_ip }}
+        timeout-minutes: 10
         run: |
-          scp -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem /tmp/start_services.sh ubuntu@"$SERVER_IP":/tmp/start_services.sh
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/labsuser.pem ubuntu@"$SERVER_IP" "chmod +x /tmp/start_services.sh && sudo bash /tmp/start_services.sh"
+          scp -o StrictHostKeyChecking=no \
+              -o ServerAliveInterval=30 \
+              -o ServerAliveCountMax=10 \
+              -i ~/.ssh/labsuser.pem /tmp/start_services.sh ubuntu@"$SERVER_IP":/tmp/start_services.sh
+          ssh -o StrictHostKeyChecking=no \
+              -o ServerAliveInterval=30 \
+              -o ServerAliveCountMax=10 \
+              -i ~/.ssh/labsuser.pem ubuntu@"$SERVER_IP" \
+              "chmod +x /tmp/start_services.sh && sudo bash /tmp/start_services.sh"
 
       - name: Afficher les URLs
         env:
