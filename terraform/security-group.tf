@@ -11,7 +11,7 @@ resource "aws_security_group" "medical_sg" {
   }
 
   ingress {
-    description = "HTTP nginx (React frontend + api proxy)"
+    description = "HTTP nginx (redirect vers HTTPS)"
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
@@ -19,12 +19,14 @@ resource "aws_security_group" "medical_sg" {
   }
 
   ingress {
-    description = "Django Gunicorn direct access"
-    from_port   = 8000
-    to_port     = 8000
+    description = "HTTPS nginx"
+    from_port   = 443
+    to_port     = 443
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  # Port 8000 : acces LOCAL uniquement (nginx proxy), pas expose publiquement
 
   ingress {
     description = "Vite dev server optional"

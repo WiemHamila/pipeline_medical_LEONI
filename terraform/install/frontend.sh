@@ -62,13 +62,39 @@ echo "[frontend] Build output: $BUILD_DIR"
 mkdir -p "$WEB_ROOT"
 cp -r "$BUILD_DIR"/. "$WEB_ROOT/"
 
+# ── Certificat SSL auto-signé ────────────────────────────────────────────
+echo "[frontend] Generating self-signed SSL certificate..."
+mkdir -p /etc/nginx/ssl
+openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout /etc/nginx/ssl/medical.key \
+  -out    /etc/nginx/ssl/medical.crt \
+  -subj "/C=TN/ST=Tunis/O=LEONI/CN=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 2>/dev/null || echo 'medical-app')"
+chmod 600 /etc/nginx/ssl/medical.key
+
 # ── nginx configuration ───────────────────────────────────────────────────
 echo "[frontend] Configuring nginx..."
 cat > /etc/nginx/sites-available/medical-app <<'NGINX_CONF'
+# Bloc HTTP : redirection permanente vers HTTPS
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
     server_name _;
+    return 301 https://$host$request_uri;
+}
+
+# Bloc HTTPS principal
+server {
+    listen 443 ssl default_server;
+    listen [::]:443 ssl default_server;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/ssl/medical.crt;
+    ssl_certificate_key /etc/nginx/ssl/medical.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 10m;
+    add_header Strict-Transport-Security "max-age=31536000" always;
 
     root /var/www/medical-frontend;
     index index.html;
@@ -85,7 +111,7 @@ server {
         proxy_set_header   Host              $host;
         proxy_set_header   X-Real-IP         $remote_addr;
         proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
-        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   X-Forwarded-Proto https;
         proxy_set_header   X-Forwarded-Host  $host;
         proxy_read_timeout 120s;
     }
@@ -94,6 +120,7 @@ server {
     location /media/ {
         proxy_pass         http://127.0.0.1:8000;
         proxy_set_header   Host              $host;
+        proxy_set_header   X-Forwarded-Proto https;
         proxy_set_header   X-Forwarded-Host  $host;
         proxy_read_timeout 60s;
     }
