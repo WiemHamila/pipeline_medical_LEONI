@@ -293,8 +293,9 @@ jobs:
           echo "  CSP frame-ancestors: $CSP"
 
   # ── Job 5 : OWASP ZAP scan actif complet (le plus long) ─────────────────
-  zap-active:
-    name: "Phase 5 - OWASP ZAP Scan Actif Complet"
+ # ── Job 5a : ZAP scan actif complet ─────────────────────────────────────
+  zap-active-full:
+    name: "Phase 5a - OWASP ZAP Scan Actif Full"
     runs-on: ubuntu-latest
     needs: [prepare, auth-security]
     steps:
@@ -321,6 +322,19 @@ jobs:
       - name: Renommer rapport ZAP actif
         run: mv report_html.html zap_active_report.html 2>/dev/null || true
 
+      - name: Upload rapport ZAP full scan
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-full-scan-report
+          path: "zap_active_report.html"
+
+  # ── Job 5b : ZAP API scan ────────────────────────────────────────────────
+  zap-active-api:
+    name: "Phase 5b - OWASP ZAP API Scan"
+    runs-on: ubuntu-latest
+    needs: [prepare, auth-security]
+    steps:
       - name: ZAP API Scan - Endpoints /api/
         uses: zaproxy/action-api-scan@v0.9.0
         with:
@@ -332,15 +346,51 @@ jobs:
       - name: Renommer rapport ZAP API actif
         run: mv report_html.html zap_api_active_report.html 2>/dev/null || true
 
-      - name: Upload rapports ZAP actifs
+      - name: Upload rapport ZAP API scan
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: zap-active-reports
-          path: "*.html"
-
+          name: zap-api-scan-report
+          path: "zap_api_active_report.html"
   # ── Job 6 : synthese DAST ────────────────────────────────────────────────
   report:
+    name: "Phase 6 - Synthese DAST"
+    runs-on: ubuntu-latest
+    needs: [prepare, security-headers, zap-passive, api-probes, auth-security, zap-active-full, zap-active-api]
+    if: always()
+    steps:
+      - name: Rapport de synthese DAST
+        env:
+          TARGET: ${{ needs.prepare.outputs.target_ip }}
+          H_RESULT: ${{ needs.security-headers.result }}
+          ZAP_P_RESULT: ${{ needs.zap-passive.result }}
+          API_RESULT: ${{ needs.api-probes.result }}
+          AUTH_RESULT: ${{ needs.auth-security.result }}
+          ZAP_A_RESULT: ${{ needs.zap-active-full.result }}
+          ZAP_API_RESULT: ${{ needs.zap-active-api.result }}
+        run: |
+          echo ""
+          echo "======================================================="
+          echo "  RAPPORT DAST — PLATEFORME MEDICALE LEONI"
+          echo "  Cible : http://$TARGET"
+          echo "======================================================="
+          echo ""
+          echo "  Phase 1 - En-tetes HTTP         : $H_RESULT"
+          echo "  Phase 2 - ZAP Passif (baseline) : $ZAP_P_RESULT"
+          echo "  Phase 3 - Sondes API             : $API_RESULT"
+          echo "  Phase 4 - Securite JWT/CORS      : $AUTH_RESULT"
+          echo "  Phase 5a - ZAP Actif Full        : $ZAP_A_RESULT"
+          echo "  Phase 5b - ZAP API Scan          : $ZAP_API_RESULT"
+          echo ""
+          echo "  Artefacts disponibles dans GitHub Actions :"
+          echo "  - zap-passive-reports/    : scan passif frontend + API"
+          echo "  - zap-full-scan-report/   : scan actif complet"
+          echo "  - zap-api-scan-report/    : scan API actif"
+          echo ""
+          echo "  Complementarite avec le SAST (tests.yml) :"
+          echo "  SAST : Bandit, Safety, pytest injection, JWT unit tests"
+          echo "  DAST : ZAP actif/passif, sondes HTTP live, CORS, IDOR"
+          echo "======================================================="
     name: "Phase 6 - Synthese DAST"
     runs-on: ubuntu-latest
     needs: [prepare, security-headers, zap-passive, api-probes, auth-security, zap-active]
