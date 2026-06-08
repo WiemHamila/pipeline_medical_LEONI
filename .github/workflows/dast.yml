@@ -136,7 +136,7 @@ jobs:
           rules_file_name: "backend-service-medical_linux/.zap/rules.tsv"
           fail_action: false
           allow_issue_writing: false
-          artifact_name: "zap-baseline-frontend"
+          artifact_name: "zap-baseline-frontend-${{ github.run_id }}"
         continue-on-error: true
 
       - name: Renommer rapport ZAP frontend
@@ -303,7 +303,7 @@ jobs:
           rules_file_name: "backend-service-medical_linux/.zap/rules.tsv"
           fail_action: false
           allow_issue_writing: false
-          artifact_name: "zap-full-scan"
+          artifact_name: "zap-full-scan-${{ github.run_id }}"
           cmd_options: "-T 10"
         continue-on-error: true
 
@@ -316,7 +316,7 @@ jobs:
           target: "http://${{ needs.prepare.outputs.target_ip }}/api/"
           fail_action: false
           allow_issue_writing: false
-          artifact_name: "zap-api-scan"
+          artifact_name: "zap-full-scan-${{ github.run_id }}"
         continue-on-error: true
 
       - name: Renommer rapport ZAP API
