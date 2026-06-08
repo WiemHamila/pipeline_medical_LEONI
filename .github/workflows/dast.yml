@@ -391,37 +391,3 @@ jobs:
           echo "  SAST : Bandit, Safety, pytest injection, JWT unit tests"
           echo "  DAST : ZAP actif/passif, sondes HTTP live, CORS, IDOR"
           echo "======================================================="
-    name: "Phase 6 - Synthese DAST"
-    runs-on: ubuntu-latest
-    needs: [prepare, security-headers, zap-passive, api-probes, auth-security, zap-active]
-    if: always()
-    steps:
-      - name: Rapport de synthese DAST
-        env:
-          TARGET: ${{ needs.prepare.outputs.target_ip }}
-          H_RESULT: ${{ needs.security-headers.result }}
-          ZAP_P_RESULT: ${{ needs.zap-passive.result }}
-          API_RESULT: ${{ needs.api-probes.result }}
-          AUTH_RESULT: ${{ needs.auth-security.result }}
-          ZAP_A_RESULT: ${{ needs.zap-active.result }}
-        run: |
-          echo ""
-          echo "======================================================="
-          echo "  RAPPORT DAST — PLATEFORME MEDICALE LEONI"
-          echo "  Cible : http://$TARGET"
-          echo "======================================================="
-          echo ""
-          echo "  Phase 1 - En-tetes HTTP         : $H_RESULT"
-          echo "  Phase 2 - ZAP Passif (baseline) : $ZAP_P_RESULT"
-          echo "  Phase 3 - Sondes API             : $API_RESULT"
-          echo "  Phase 4 - Securite JWT/CORS      : $AUTH_RESULT"
-          echo "  Phase 5 - ZAP Actif complet      : $ZAP_A_RESULT"
-          echo ""
-          echo "  Artefacts disponibles dans GitHub Actions :"
-          echo "  - zap-passive-reports/   : scan passif frontend + API"
-          echo "  - zap-active-reports/    : scan actif + API scan"
-          echo ""
-          echo "  Complementarite avec le SAST (tests.yml) :"
-          echo "  SAST : Bandit, Safety, pytest injection, JWT unit tests"
-          echo "  DAST : ZAP actif/passif, sondes HTTP live, CORS, IDOR"
-          echo "======================================================="
