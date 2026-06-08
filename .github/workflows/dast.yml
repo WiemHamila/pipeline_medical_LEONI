@@ -128,7 +128,6 @@ jobs:
     steps:
       - name: Checkout (pour rules.tsv)
         uses: actions/checkout@v4
-
       - name: ZAP Baseline - Frontend (port 80)
         uses: zaproxy/action-baseline@v0.12.0
         with:
@@ -136,7 +135,7 @@ jobs:
           rules_file_name: "backend-service-medical_linux/.zap/rules.tsv"
           fail_action: false
           allow_issue_writing: false
-          artifact_name: "zap-baseline-frontend-${{ github.run_id }}"
+          
         continue-on-error: true
 
       - name: Renommer rapport ZAP frontend
@@ -149,7 +148,6 @@ jobs:
           rules_file_name: "backend-service-medical_linux/.zap/rules.tsv"
           fail_action: false
           allow_issue_writing: false
-          artifact_name: "zap-baseline-api"
         continue-on-error: true
 
       - name: Renommer rapport ZAP API
@@ -303,7 +301,6 @@ jobs:
           rules_file_name: "backend-service-medical_linux/.zap/rules.tsv"
           fail_action: false
           allow_issue_writing: false
-          artifact_name: "zap-full-scan-${{ github.run_id }}"
           cmd_options: "-T 10"
         continue-on-error: true
 
@@ -316,7 +313,6 @@ jobs:
           target: "http://${{ needs.prepare.outputs.target_ip }}/api/"
           fail_action: false
           allow_issue_writing: false
-          artifact_name: "zap-full-scan-${{ github.run_id }}"
         continue-on-error: true
 
       - name: Renommer rapport ZAP API
