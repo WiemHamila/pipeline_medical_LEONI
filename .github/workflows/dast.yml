@@ -128,21 +128,28 @@ jobs:
     steps:
       - name: Checkout (pour rules.tsv)
         uses: actions/checkout@v4
+
+      - name: Creer rules.tsv par defaut si absent
+        run: |
+          mkdir -p backend-service-medical_linux/.zap
+          if [ ! -f "backend-service-medical_linux/.zap/rules.tsv" ]; then
+            echo "# ZAP rules" > backend-service-medical_linux/.zap/rules.tsv
+          fi
+
       - name: ZAP Baseline - Frontend (port 80)
-        uses: zaproxy/action-baseline@v0.12.0
+        uses: zaproxy/action-baseline@v0.14.0
         with:
           target: "http://${{ needs.prepare.outputs.target_ip }}"
           rules_file_name: "backend-service-medical_linux/.zap/rules.tsv"
           fail_action: false
           allow_issue_writing: false
-          
         continue-on-error: true
 
       - name: Renommer rapport ZAP frontend
         run: mv report_html.html zap_frontend.html 2>/dev/null || true
 
       - name: ZAP Baseline - API (port 8000)
-        uses: zaproxy/action-baseline@v0.12.0
+        uses: zaproxy/action-baseline@v0.14.0
         with:
           target: "http://${{ needs.prepare.outputs.target_ip }}:8000"
           rules_file_name: "backend-service-medical_linux/.zap/rules.tsv"
@@ -294,8 +301,15 @@ jobs:
       - name: Checkout (pour rules.tsv)
         uses: actions/checkout@v4
 
+      - name: Creer rules.tsv par defaut si absent
+        run: |
+          mkdir -p backend-service-medical_linux/.zap
+          if [ ! -f "backend-service-medical_linux/.zap/rules.tsv" ]; then
+            echo "# ZAP rules" > backend-service-medical_linux/.zap/rules.tsv
+          fi
+
       - name: ZAP Full Active Scan - Application complete
-        uses: zaproxy/action-full-scan@v0.10.0
+        uses: zaproxy/action-full-scan@v0.12.0
         with:
           target: "http://${{ needs.prepare.outputs.target_ip }}"
           rules_file_name: "backend-service-medical_linux/.zap/rules.tsv"
@@ -308,14 +322,14 @@ jobs:
         run: mv report_html.html zap_active_report.html 2>/dev/null || true
 
       - name: ZAP API Scan - Endpoints /api/
-        uses: zaproxy/action-api-scan@v0.7.0
+        uses: zaproxy/action-api-scan@v0.9.0
         with:
           target: "http://${{ needs.prepare.outputs.target_ip }}/api/"
           fail_action: false
           allow_issue_writing: false
         continue-on-error: true
 
-      - name: Renommer rapport ZAP API
+      - name: Renommer rapport ZAP API actif
         run: mv report_html.html zap_api_active_report.html 2>/dev/null || true
 
       - name: Upload rapports ZAP actifs
