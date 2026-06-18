@@ -392,7 +392,7 @@ jobs:
           echo "Setup agent complet"
           REMOTE
 
-  # ── Job 2 : Alarmes CloudWatch + SNS + Retention logs ───────────────────
+  # ── Job 2 : Alarmes CloudWatch + SNS + Retention logs ───────────────
   cloudwatch-alarms:
     name: "Phase 2 - Alarmes CloudWatch + SNS + Retention"
     runs-on: ubuntu-latest
